@@ -1,0 +1,8 @@
+streamlit
+google-generativeai
+pandas
+Pillow
+fpdf
+pymongo
+pymupdf
+matplotlib

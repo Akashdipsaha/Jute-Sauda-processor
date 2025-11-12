@@ -1,0 +1,3871 @@
+import streamlit as st
+import google.generativeai as genai
+import pandas as pd
+from PIL import Image
+import json
+import re
+import io
+from fpdf import FPDF
+import pymongo
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+from urllib.parse import quote_plus
+import fitz
+import datetime
+import matplotlib.pyplot as plt  # Added for charting capabilities
+import tempfile                  # [UPDATED] for temp image files
+import os                        # [UPDATED] for file cleanup
+
+# --- [COMMENTED OUT] Import for password hashing ---
+# try:
+#     from passlib.context import CryptContext
+# except ImportError:
+#     st.error("Missing 'passlib' library. Please install it: pip install passlib")
+#     st.stop()
+
+# --- [COMMENTED OUT] Password Hashing Context ---
+# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# --- Use Streamlit Secrets ---
+# Ensure these are correctly set in your environment or Streamlit secrets
+MY_API_KEY = "AIzaSyCWeRY8cV44-V9cLrhj0oBi9KhKym7YvKk"
+MONGO_USER = "Akashdip_Saha"
+MONGO_PASSWORD = "STIL@12345"
+MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
+
+# --- Database Connection Helper ---
+@st.cache_resource(ttl=600)  # Cache the client for 10 minutes
+def get_mongo_connection():
+    """Establishes and returns a MongoDB client and the user collection."""
+    try:
+        escaped_user = quote_plus(MONGO_USER)
+        escaped_pass = quote_plus(MONGO_PASSWORD)
+        connection_string = f"mongodb+srv://{escaped_user}:{escaped_pass}@{MONGO_CLUSTER_URL}"
+        client = MongoClient(connection_string, server_api=ServerApi('1'))
+        client.admin.command('ping')  # Test connection
+        db = client["ocr_project"]
+        return db["users"]  # Return the 'users' collection
+    except Exception as e:
+        st.error(f"Failed to connect to MongoDB: {e}")
+        return None
+
+# --- PDF Download & Auto-Save Function ---
+def save_and_log_download():
+    """
+    1. Logs the PDF download event to MongoDB.
+    2. AUTOMATICALLY SAVES the current session data to MongoDB (Sauda Data).
+    """
+    # --- 1. Log the Download Event ---
+    try:
+        users_col = get_mongo_connection()
+        if users_col is not None:
+            db = users_col.database
+            logs_col = db["download_logs"] # New collection for logs
+            now = datetime.datetime.now(datetime.timezone.utc)
+            log_entry = {
+                "event": "PDF Download",
+                "username": st.session_state.get("username", "Unknown"),
+                "timestamp": now,
+                "download_date": now.strftime("%Y-%m-%d"), # Separate Date
+                "download_time": now.strftime("%H:%M:%S UTC"), # Separate Time
+                "details": "User downloaded the Sauda Report PDF"
+            }
+            logs_col.insert_one(log_entry)
+            print(f"Log saved: {log_entry}")
+    except Exception as e:
+        print(f"Failed to log download event: {e}")
+
+    # --- 2. Auto-Save Data to MongoDB ---
+    try:
+        if 'result_list' in st.session_state and st.session_state.result_list:
+            users_col = get_mongo_connection()
+            if users_col is not None:
+                db = users_col.database
+                data_col = db["sauda_data"] # Collection for the actual data
+                # Prepare batch with metadata
+                batch_data = []
+                now = datetime.datetime.now(datetime.timezone.utc)
+                for doc in st.session_state.result_list:
+                    doc_copy = doc.copy()
+                    doc_copy['uploaded_at'] = now
+                    doc_copy['uploaded_by'] = st.session_state.get("username", "Unknown")
+                    batch_data.append(doc_copy)
+                data_col.insert_many(batch_data)
+                st.toast("Data automatically saved to Database!", icon="💾")
+                print("Data auto-saved to MongoDB.")
+    except Exception as e:
+        print(f"Auto-save failed: {e}")
+        st.toast(f"Auto-save failed: {e}", icon="⚠️")
+
+# --- [COMMENTED OUT] User Authentication Functions ---
+# def verify_user(username, password):
+#     ... (Logic commented out) ...
+
+# def create_user(username, password):
+#     ... (Logic commented out) ...
+
+# --- Corporate CSS Theme ---
+corporate_css = """
+<style>
+:root {
+    --color-primary: #016B61;      /* Dark Teal */
+    --color-accent: #70B2B2;       /* Medium Teal */
+    --color-light-accent: #9ECFD4; /* Light Teal */
+    --color-highlight: #E5E9C5;    /* Pale Green-Yellow */
+    --color-bg: #F8F9F0;           /* Very Light version of highlight */
+    --color-dark: #003B36;         /* Very Dark Teal for Text */
+    --radius: 12px;
+    --shadow: 0 4px 14px rgba(0,0,0,0.06);
+    --shadow-hover: 0 8px 24px rgba(112,178,178,0.35); /* From --color-accent */
+}
+
+/* ====== BACKGROUND WITH FLOATING PARTICLES ====== */
+[data-testid="stAppViewContainer"] > .main {
+    position: relative;
+    background: var(--color-bg);
+    color: var(--color-dark);
+    overflow: hidden;
+}
+
+/* The particles layer */
+[data-testid="stAppViewContainer"]::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: radial-gradient(circle, var(--color-accent) 1px, transparent 2px);
+    background-size: 100px 100px;
+    animation: floatParticles 40s linear infinite;
+    opacity: 0.2;
+    z-index: 0;
+}
+
+@keyframes floatParticles {
+    0% { background-position: 0 0, 0 0; }
+    50% { background-position: 50px 100px, -50px 50px; }
+    100% { background-position: 0 0, 0 0; }
+}
+
+/* Make all content above the particle layer */
+[data-testid="stAppViewContainer"] > .main > div {
+    position: relative;
+    z-index: 1;
+}
+
+/* SIDEBAR */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, var(--color-light-accent) 0%, #FFFFFF 100%);
+    border-right: 2px solid var(--color-accent);
+    box-shadow: var(--shadow);
+}
+
+/* HEADINGS */
+h1, h2, h3 {
+    font-family: 'Poppins', sans-serif;
+    color: var(--color-primary);
+}
+h1 {
+    font-size: 2.4rem;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-accent), var(--color-light-accent), var(--color-primary));
+    background-size: 400% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 6s linear infinite;
+}
+@keyframes shimmer {
+    0% { background-position: 0% center; }
+    100% { background-position: 400% center; }
+}
+
+/* CONTAINERS */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid var(--color-light-accent);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: all 0.3s ease;
+    padding: 10px;
+}
+[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    box-shadow: var(--shadow-hover);
+    transform: translateY(-3px);
+}
+
+/* INPUTS */
+input, textarea {
+    border-radius: var(--radius);
+    border: 1px solid var(--color-accent) !important;
+    background: #ffffff !important;
+    transition: all 0.2s ease;
+}
+input:focus, textarea:focus {
+    border-color: var(--color-primary) !important;
+    box-shadow: 0 0 10px rgba(112,178,178,0.4);
+}
+
+/* FILE UPLOADER */
+[data-testid="stFileUploader"] section[data-baseweb="file-uploader"] {
+    background: #FAFEF5;
+    border: 2px dashed var(--color-accent);
+    border-radius: var(--radius);
+}
+[data-testid="stFileUploader"] button {
+    background: linear-gradient(135deg, var(--color-accent), var(--color-primary));
+    color: white;
+    border-radius: var(--radius);
+    font-weight: 600;
+    transition: all 0.25s ease;
+}
+[data-testid="stFileUploader"] button:hover {
+    background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+    transform: translateY(-2px);
+}
+
+/* DATA EDITOR */
+[data-testid="stDataFrame"] {
+    border-radius: var(--radius);
+    border: 1px solid var(--color-light-accent);
+    background: #ffffff;
+    box-shadow: var(--shadow);
+}
+
+/* ALERTS */
+.stAlert {
+    background: var(--color-highlight) !important;
+    border-left: 5px solid var(--color-accent) !important;
+    color: var(--color-dark) !important;
+    box-shadow: var(--shadow);
+}
+
+/* BUTTONS */
+[data-testid="stButton"] button {
+    background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+    background-size: 200% auto;
+    color: #fff;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: 0 4px 14px rgba(112,178,178,0.35);
+    transition: all 0.25s ease;
+}
+[data-testid="stButton"] button:hover {
+    background-position: right center;
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-hover);
+}
+[data-testid="stButton"] button:active {
+    transform: scale(0.97);
+}
+
+/* Custom Add Row Button Style */
+[data-testid="stButton"] button span:contains("Add New Sauda Row") {
+    background: linear-gradient(135deg, var(--color-highlight), #ffffff) !important;
+    color: var(--color-primary) !important;
+    font-weight: 700 !important;
+    text-shadow: none;
+    border: 1px solid var(--color-primary);
+}
+[data-testid="stButton"] button:hover span:contains("Add New Sauda Row") {
+    background: linear-gradient(135deg, #ffffff, var(--color-highlight)) !important;
+    box-shadow: var(--shadow-hover);
+}
+
+/* Custom Delete Row Button Style */
+[data-testid="stButton"] button span:contains("Delete Selected Row") {
+    background: linear-gradient(135deg, #FFD1D1, #FFFFFF) !important; /* Light Red */
+    color: #D90429 !important; /* Dark Red */
+    font-weight: 700 !important;
+    text-shadow: none;
+    border: 1px solid #D90429;
+}
+[data-testid="stButton"] button:hover span:contains("Delete Selected Row") {
+    background: linear-gradient(135deg, #FFFFFF, #FFD1D1) !important;
+    box-shadow: 0 8px 24px rgba(217,4,41,0.35); /* Red Shadow */
+}
+
+/* NEXT / PREVIOUS Buttons */
+button[title="Previous"], button[title="Next"],
+[data-testid="stButton"] button span:contains("Previous"),
+[data-testid="stButton"] button span:contains("Next") {
+    background: linear-gradient(90deg, var(--color-primary), var(--color-accent));
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    border-radius: var(--radius);
+    padding: 0.7em 2em;
+    letter-spacing: 0.5px;
+    transition: all 0.3s ease;
+}
+button[title="Previous"]:hover, button[title="Next"]:hover {
+    transform: translateY(-2px);
+    background: linear-gradient(90deg, var(--color-accent), var(--color-primary));
+    box-shadow: var(--shadow-hover);
+}
+
+/* LOGIN BOX */
+body[data-layout="centered"] [data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(15px);
+    border: 1px solid rgba(112,178,178,0.4);
+    box-shadow: 0 10px 40px rgba(112,178,178,0.25);
+}
+
+/* RADIO TOGGLE */
+body[data-layout="centered"] .stRadio > div {
+    display: flex;
+    background: var(--color-highlight);
+    border-radius: var(--radius);
+    padding: 4px;
+}
+body[data-layout="centered"] .stRadio [data-baseweb="radio"] {
+    flex: 1;
+    text-align: center;
+    border-radius: 6px;
+    color: var(--color-dark);
+    transition: all 0.2s ease-in-out;
+}
+body[data-layout="centered"] .stRadio [data-baseweb="radio"][data-checked="true"] {
+    background: #fff;
+    color: var(--color-primary);
+    font-weight: 600;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+</style>
+"""
+
+st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+""", unsafe_allow_html=True)
+
+# --- Session State for Login (Forced to True for now) ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = True # Forced login
+if 'username' not in st.session_state:
+    st.session_state.username = "Admin" # Default user
+# --- [END NEW] ---
+
+if 'reset_counter' not in st.session_state:
+    st.session_state.reset_counter = 0
+if 'camera_open' not in st.session_state:
+    st.session_state.camera_open = False
+if 'active_input' not in st.session_state:
+    st.session_state.active_input = None
+if 'extraction_done' not in st.session_state:
+    st.session_state.extraction_done = False
+if 'result_list' not in st.session_state:
+    st.session_state.result_list = []
+if 'current_edit_index' not in st.session_state:
+    st.session_state.current_edit_index = 0
+if 'captured_image_data' not in st.session_state:
+    st.session_state.captured_image_data = None
+if 'row_to_delete_input' not in st.session_state:
+    st.session_state.row_to_delete_input = 1
+# NOTE: show_charts no longer used in UI per requirement.
+if 'show_charts' not in st.session_state:
+    st.session_state.show_charts = False
+
+# --- [PDF REPORT GENERATION] ---
+# [UPDATED] include_charts parameter; add Area column; white-text height calc; append charts as images
+# --- [PDF REPORT GENERATION] ---
+# [UPDATED] Added vertical rotation for chart labels
+def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, include_charts=False):
+    """
+    Creates a structured, multi-page PDF report from a JSON string.
+    Uses standard FPDF methods to ensure compatibility and robust tables.
+    Appends Matplotlib charts at the end if include_charts=True.
+    """
+
+    class PDF(FPDF):
+        def header(self):
+            pass
+        def footer(self):
+            if dl_sauda_details and self.page_no() > 1:
+                self.set_y(-15)
+                self.set_font('Arial', '', 8)
+                self.set_text_color(128)
+                self.cell(0, 10, f'Page {self.page_no() - 1}', 0, 0, 'C')
+
+    pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=10)
+
+    # Helper for safe latin-1 encode
+    def safe_txt(s):
+        return str(s).encode("latin-1", "replace").decode("latin-1")
+
+    if not json_text or json_text.strip() == "[]":
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, 'No document data to generate PDF.', 0, 1, 'C')
+        return pdf.output(dest='S').encode('latin-1')
+
+    # We'll collect chart temp image paths to delete later
+    temp_images = []
+
+    try:
+        data_list = json.loads(json_text)
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+
+        # --- Part 1: Generate Summary Data ---
+        area_summary = {}
+        broker_summary = {}
+        total_lorries = 0
+
+        if dl_area_summary or dl_broker_summary or dl_sauda_details or include_charts:
+            for page_data in data_list:
+                for sauda in page_data.get('saudas', []):
+                    area = sauda.get('Area', 'UNKNOWN')
+                    if area is None or str(area).strip() == "":
+                        area = 'UNKNOWN'
+                    broker_name = sauda.get('Broker', 'UNKNOWN')
+                    if broker_name is None or str(broker_name).strip() == "":
+                        broker_name = 'UNKNOWN'
+                    try:
+                        lorries_val = sauda.get('No_of_Lorries', 0)
+                        lorries = int(lorries_val) if lorries_val is not None else 0
+                    except (ValueError, TypeError):
+                        lorries = 0
+                    area_summary[area] = area_summary.get(area, 0) + lorries
+                    if broker_name not in broker_summary:
+                        broker_summary[broker_name] = {"total_lorries": 0, "area_breakdown": {}}
+                    broker_summary[broker_name]["total_lorries"] += lorries
+                    broker_summary[broker_name]["area_breakdown"][area] = broker_summary[broker_name]["area_breakdown"].get(area, 0) + lorries
+                    total_lorries += lorries
+
+        # --- Part 2: Create Summary PDF Page ---
+        if dl_area_summary or dl_broker_summary:
+            pdf.add_page()
+
+            # === AREA SUMMARY ===
+            if dl_area_summary:
+                pdf.set_font("Arial", 'B', 16)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 10, 'Area-wise Lorry Summary', 0, 1, 'C')
+                pdf.ln(5)
+
+                col_width_area = 100
+                col_width_count = 45
+                col_width_pct = 45
+
+                pdf.set_font("Arial", 'B', 12)
+                pdf.set_fill_color(230, 230, 230)
+                pdf.cell(col_width_area, 8, 'Area', 1, 0, 'C', fill=True)
+                pdf.cell(col_width_count, 8, 'Total Lorries', 1, 0, 'C', fill=True)
+                pdf.cell(col_width_pct, 8, 'Percentage', 1, 1, 'C', fill=True)
+
+                pdf.set_font("Arial", '', 10)
+                if total_lorries > 0:
+                    for area, count in sorted(area_summary.items()):
+                        percentage = (count / total_lorries) * 100
+                        pdf.cell(col_width_area, 8, f' {safe_txt(area)}', 1)
+                        pdf.cell(col_width_count, 8, str(count), 1, 0, 'C')
+                        pdf.cell(col_width_pct, 8, f'{percentage:.2f}%', 1, 1, 'R')
+                else:
+                    pdf.cell(190, 10, "No lorry data found to summarize.", 1, 1, 'C')
+
+                pdf.set_font("Arial", 'B', 10)
+                pdf.cell(col_width_area, 8, 'TOTAL', 1, 0, 'C')
+                pdf.cell(col_width_count, 8, str(total_lorries), 1, 0, 'C')
+                pdf.cell(col_width_pct, 8, '100.00%', 1, 1, 'R')
+                pdf.ln(10)
+
+            # === BROKER SUMMARY ===
+            if dl_broker_summary:
+                pdf.set_font("Arial", 'B', 16)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 10, 'Broker-wise Lorry Summary', 0, 1, 'C')
+                pdf.ln(5)
+
+                col_width_broker = 60
+                col_width_breakdown = 100
+                col_width_total = 30
+
+                pdf.set_font("Arial", 'B', 12)
+                pdf.set_fill_color(230, 230, 230)
+                pdf.cell(col_width_broker, 8, 'Broker', 1, 0, 'C', fill=True)
+                pdf.cell(col_width_breakdown, 8, 'Area - No. of Lorry(s)', 1, 0, 'C', fill=True)
+                pdf.cell(col_width_total, 8, 'Total', 1, 1, 'C', fill=True)
+
+                pdf.set_font("Arial", '', 8)
+                if not broker_summary:
+                    pdf.cell(190, 10, "No broker data found to summarize.", 1, 1, 'C')
+
+                for broker_name, data in sorted(broker_summary.items()):
+                    broker_text = f' {safe_txt(broker_name)}'
+                    total_text = str(data["total_lorries"])
+                    breakdown_list = []
+                    for area_name, count in data["area_breakdown"].items():
+                        if count > 0:
+                            breakdown_list.append(f"{area_name} - {count}")
+                    breakdown_text = f' {safe_txt(", ".join(breakdown_list))}'
+
+                    start_x = pdf.get_x()
+                    start_y = pdf.get_y()
+
+                    # Invisible white text for height calc
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.multi_cell(col_width_broker, 6, broker_text, border=0, align='L')
+                    h1 = pdf.get_y() - start_y
+                    pdf.set_xy(start_x + col_width_broker, start_y)
+                    pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
+                    h2 = pdf.get_y() - start_y
+                    row_height = max(h1, h2, 6)
+
+                    # Page break
+                    if start_y + row_height > 270:
+                        pdf.add_page()
+                        start_y = pdf.get_y()
+
+                    # Draw visible text
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.set_xy(start_x, start_y)
+                    pdf.multi_cell(col_width_broker, 6, broker_text, border=0, align='L')
+                    pdf.set_xy(start_x + col_width_broker, start_y)
+                    pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
+                    pdf.set_xy(start_x + col_width_broker + col_width_breakdown, start_y)
+                    pdf.cell(col_width_total, 6, total_text, border=0, align='C')
+
+                    # Borders
+                    pdf.set_xy(start_x, start_y)
+                    pdf.rect(start_x, start_y, col_width_broker, row_height)
+                    pdf.rect(start_x + col_width_broker, start_y, col_width_breakdown, row_height)
+                    pdf.rect(start_x + col_width_broker + col_width_breakdown, start_y, col_width_total, row_height)
+                    pdf.set_y(start_y + row_height)
+
+                pdf.set_font("Arial", 'B', 10)
+                pdf.cell(col_width_broker + col_width_breakdown, 8, 'TOTAL LORRIES', 1, 0, 'C')
+                pdf.cell(col_width_total, 8, str(total_lorries), 1, 1, 'C')
+
+        # --- Part 3: Create Data Pages (One per Image) ---
+        if dl_sauda_details:
+            col_widths = {
+                "Broker": 36, "Area": 22, "Mukkam": 22, "Bales_Mark": 18,   
+                "No_of_Lorries": 14, "No_of_Bales": 14, "Grades": 24, "Rates": 24, "Unit": 16          
+            }
+            headers = ["Broker", "Area", "Mukkam", "Bales Mark", "Lorries", "Bales", "Grades", "Rates", "Unit"]
+            header_keys = ["Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit"]
+
+            for i, page_data in enumerate(data_list):
+                pdf.add_page()
+                pdf.set_text_color(0, 0, 0)
+                pdf.set_font("Arial", 'B', 16)
+                pdf.cell(0, 10, f'Sauda Details', 0, 1, 'C')
+                pdf.ln(5)
+                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(95, 8, f"Page Date: {page_data.get('PAGE_DATE', 'N/A')}", 0, 0, 'L')
+                pdf.cell(95, 8, f"Opening Price: {page_data.get('OPENING_PRICE', 'N/A')}", 0, 1, 'R')
+                pdf.ln(5)
+
+                pdf.set_font("Arial", 'B', 9)
+                pdf.set_fill_color(230, 230, 230)
+                for j, header in enumerate(headers):
+                    key = header_keys[j]
+                    pdf.cell(col_widths[key], 7, header, 1, 0, 'C', fill=True)
+                pdf.ln()
+
+                pdf.set_font("Arial", '', 8)
+                saudas_list = page_data.get('saudas', [])
+                if not saudas_list:
+                    pdf.cell(190, 10, "No Sauda entries found for this page.", 1, 1, 'C')
+
+                for sauda in saudas_list:
+                    grades_str = ", ".join(map(str, sauda.get('Grades', []))) if isinstance(sauda.get('Grades'), list) else str(sauda.get('Grades', ''))
+                    rates_str = ", ".join(map(str, sauda.get('Rates', []))) if isinstance(sauda.get('Rates'), list) else str(sauda.get('Rates', ''))
+                    sauda_data = {
+                        "Broker": str(sauda.get('Broker', '')),
+                        "Area": str(sauda.get('Area', '') or ''),
+                        "Mukkam": str(sauda.get('Mukkam', '') or ''),
+                        "Bales_Mark": str(sauda.get('Bales_Mark', '')),
+                        "No_of_Lorries": str(sauda.get('No_of_Lorries', '')),
+                        "No_of_Bales": str(sauda.get('No_of_Bales', '')),
+                        "Grades": grades_str,
+                        "Rates": rates_str,
+                        "Unit": str(sauda.get('Unit', ''))
+                    }
+
+                    start_x = pdf.get_x()
+                    start_y = pdf.get_y()
+
+                    # Invisible white text for measuring heights
+                    pdf.set_text_color(255, 255, 255)
+                    max_h = 6
+                    current_x_temp = start_x
+                    for key in header_keys:
+                        txt = safe_txt(sauda_data[key])
+                        align = 'C' if key in ['No_of_Lorries', 'No_of_Bales'] else 'L'
+                        pdf.set_xy(current_x_temp, start_y)
+                        pdf.multi_cell(col_widths[key], 6, txt, border=0, align=align)
+                        h = pdf.get_y() - start_y
+                        if h > max_h: max_h = h
+                        current_x_temp += col_widths[key]
+
+                    # Page break check
+                    if start_y + max_h > 270:
+                        pdf.add_page()
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_font("Arial", 'B', 9)
+                        pdf.set_fill_color(230, 230, 230)
+                        for j, header in enumerate(headers):
+                            key = header_keys[j]
+                            pdf.cell(col_widths[key], 7, header, 1, 0, 'C', fill=True)
+                        pdf.ln()
+                        pdf.set_font("Arial", '', 8)
+                        start_y = pdf.get_y()
+
+                    # Draw visible content + borders
+                    pdf.set_text_color(0, 0, 0)
+                    current_x = start_x
+                    for key in header_keys:
+                        txt = safe_txt(sauda_data[key])
+                        align = 'C' if key in ['No_of_Lorries', 'No_of_Bales'] else 'L'
+                        pdf.set_xy(current_x, start_y)
+                        pdf.multi_cell(col_widths[key], 6, txt, border=0, align=align)
+                        pdf.rect(current_x, start_y, col_widths[key], max_h)
+                        current_x += col_widths[key]
+                    pdf.set_y(start_y + max_h)
+
+        # --- Part 4: Append Charts at End (if include_charts) ---
+        if include_charts:
+            # Build flat list of all saudas
+            all_saudas_flat = []
+            for doc in data_list:
+                if 'saudas' in doc and isinstance(doc['saudas'], list):
+                    all_saudas_flat.extend(doc['saudas'])
+
+            if all_saudas_flat:
+                df = pd.DataFrame(all_saudas_flat)
+                # Clean types
+                df['No_of_Lorries'] = pd.to_numeric(df.get('No_of_Lorries', 0), errors='coerce').fillna(0)
+                df['Area'] = df.get('Area', '').fillna('Unknown').replace('', 'Unknown')
+                df['Broker'] = df.get('Broker', '').fillna('Unknown').replace('', 'Unknown')
+
+                # Chart 1: Area-wise Lorry Distribution
+                try:
+                    area_data = df.groupby('Area')['No_of_Lorries'].sum().sort_values(ascending=False)
+                    fig1 = plt.figure(figsize=(8, 5))
+                    ax1 = fig1.add_subplot(111)
+                    area_data.plot(kind='bar', ax=ax1)
+                    ax1.set_title('Area-wise Lorry Distribution')
+                    ax1.set_xlabel('Area')
+                    ax1.set_ylabel('Total Lorries')
+                    # [FIX] Slight rotation for Areas if they get too long
+                    ax1.tick_params(axis='x', rotation=45) 
+                    fig1.tight_layout()
+                    tmp1 = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                    fig1.savefig(tmp1.name, dpi=200)
+                    plt.close(fig1)
+                    temp_images.append(tmp1.name)
+                except Exception as e:
+                    print(f"Failed to generate Area-wise chart: {e}")
+
+                # Chart 2: Broker-wise Lorry Summary (Stacked by Area)
+                try:
+                    pivot = df.pivot_table(index='Broker', columns='Area', values='No_of_Lorries', aggfunc='sum', fill_value=0)
+                    fig2 = plt.figure(figsize=(9, 6))
+                    ax2 = fig2.add_subplot(111)
+                    bottom = None
+                    for i, col in enumerate(pivot.columns):
+                        vals = pivot[col].values
+                        if bottom is None:
+                            bottom = vals
+                            ax2.bar(pivot.index, vals, label=col)
+                        else:
+                            ax2.bar(pivot.index, vals, bottom=bottom, label=col)
+                            bottom = bottom + vals
+                    ax2.set_title('Broker-wise Lorry Summary (Stacked by Area)')
+                    ax2.set_xlabel('Broker')
+                    ax2.set_ylabel('Total Lorries')
+                    ax2.legend(title='Area', bbox_to_anchor=(1.04, 1), loc='upper left')
+                    
+                    # [FIX] Vertical rotation for Broker names
+                    ax2.tick_params(axis='x', rotation=90) 
+                    
+                    fig2.tight_layout()
+                    tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                    fig2.savefig(tmp2.name, dpi=200)
+                    plt.close(fig2)
+                    temp_images.append(tmp2.name)
+                except Exception as e:
+                    print(f"Failed to generate Broker-wise stacked chart: {e}")
+
+                # Append images to PDF
+                for img_path in temp_images:
+                    try:
+                        pdf.add_page()
+                        page_w = pdf.w - 20 
+                        pdf.image(img_path, x=10, y=10, w=page_w)
+                    except Exception as e:
+                        print(f"Failed to append chart image {img_path} to PDF: {e}")
+
+    except Exception as e:
+        print(f"PDF Generation Error: {e}")
+        if not pdf.page_no(): pdf.add_page()
+        pdf.set_font("Arial", '', 10)
+        pdf.multi_cell(0, 5, f"Error: {str(e)}")
+
+    # Cleanup
+    for path in temp_images:
+        try:
+            os.remove(path)
+        except Exception as e:
+            print(f"Failed to delete temp image {path}: {e}")
+
+    return pdf.output(dest='S').encode('latin-1')
+
+def create_text_report(json_text):
+    """
+    Creates a structured, report-style TXT file from a JSON string.
+    """
+    report_string = ""
+    if not json_text or json_text.strip() == "[]":
+        return "No document data to generate text report."
+    try:
+        data_list = json.loads(json_text)
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+        for i, data_dict in enumerate(data_list):
+            report_string += f"Extracted Sauda Data (Image {i+1})\n"
+            report_string += "=================================\n\n"
+            try:
+                report_string += f"Page Date:\n  {data_dict.get('PAGE_DATE', 'N/A')}\n\n"
+                report_string += f"Opening Price:\n  {data_dict.get('OPENING_PRICE', 'N/A')}\n\n"
+                if 'saudas' in data_dict and data_dict['saudas']:
+                    df = pd.DataFrame(data_dict['saudas'])
+                    sauda_list = df.to_dict(orient='records')
+                    for j, sauda in enumerate(sauda_list):
+                        report_string += f"--- Sauda Entry {j+1} ---\n"
+                        for key, value in sauda.items():
+                            if value is not None and str(value).strip() != "":
+                                key_name = str(key).replace('_', ' ').title()
+                                if isinstance(value, list):
+                                    value_str = ", ".join(map(str, value))
+                                else:
+                                    value_str = str(value)
+                                report_string += f"{key_name}:\n  {value_str}\n\n"
+                        report_string += "\n"
+                else:
+                    report_string += "No sauda entries found for this page.\n\n"
+            except Exception:
+                st.warning(f"Document {i+1} JSON structure is complex. TXT will show raw data.")
+                report_string += json.dumps(data_dict, indent=2) + "\n\n"
+            report_string += "\n\n"
+    except Exception as e:
+        print(f"Could not convert JSON to table for TXT, falling back. Error: {e}")
+        report_string = json_text
+    return report_string
+
+# --- [AI EXTRACTION LOGIC] ---
+@st.cache_data(show_spinner=False)
+def get_json_from_image(image_bytes, api_key):
+    """
+    Sends the image and a specialized prompt to the Gemini API.
+    This new prompt is for "Sauda" (deal) entries.
+    """
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.5-flash')
+
+        # --- [NEW SAUDA PROMPT - V8 (With specific Area logic)] ---
+        prompt_text = """
+You are a specialized Data Extraction Engine for handwritten "Jute Sauda" (deal) ledgers. Your ONLY task is to analyze an image of a ledger page and convert ALL entries on that page into a **single, structured JSON object**.
+
+**AREA/MUKAM/BROKER REFERENCE LISTS:**
+This is your single source of truth for names and locations. You MUST use this list to correct messy handwriting or abbreviations. When you identify a `Mukkam`, you MUST use the list below to find its corresponding `Area`.
+
+* **SOUTH BENGAL (SB):** PATKIBARI, JALANGI, BETHUADAHARI, BANGALIHI, NABADWIP, SAGARPARA, SAHEBNAGAR, GOLABARI, KRISHNANAGAR, NAZIRPUR, SINGUR, BADURIA, KANTALIA, BHIMPUR, HARIPAL, KALITALA, ISLAMPUR-SB, NIMTALA, CHAPRA, MOYNA, COSSIMBAZAR, GOAS, MAJDIA, BONGAON, BEHRAMPUR, KANTHALIA-L, PALASIPARA-L, NILGANJ-L, PALASIPARA, ASSANAGAR, KARIMPUR, TRIMOHINI, DHUBULia, KATWA, CHAPRA-L, REZINAGAR, AMTALA-L, KALITALA-L, AMTALA, SEORAPHULLY, GOPALNAGAR, NALIKUL, ASSANNAGR-L, DEBNATHPUR, RANAGHAT-HB, BARA ANDULIA, MARUTHIA, JIAGANG, BETAI, MURUTHIA, BIRPUR, ANDULIA-L, ANDULIA, BHIMPUR-HB, CHAKDAH, KALNA, KALIGANJ, ARANGHATA, DAINHAT, BURDWAN-L, DOMKAL, LALBAGH, PALSHIPARA-L, BERACHAPA, BHAGIRATHPUR, JANGIPUR, HARINGHATA-L, BETHUADAHARI-L, RANAGhat, MAYAPUR, GOLABARI, HARIPAL, TARKESWAR, RAJAPUR, CHAPADANGA
+* **BIHAR (BR):** PURNEA, FORBESGANJ, KISHANGANJ, KISHANGANJ-A, KISHANGANJ-J, KISHANGANJ-B, GULABBAGH
+* **ASSAM (AS):** TARABARI, BILASIPARA, GUWAHATI, GOSSAIGAON, KHARUPETIA, NOWGAON, DHUBRI, BHURAGAON, DHINGBAZAR
+* **SEMI NORTHERN (SN):** SAMSI-J, MALDAH, SRIGHAR, GANGARAMPUR-L, TULSIHATA, HARISHCHPORE, RAIGANJ, KANKI, BULBULCHANDI, GAZOLE-L, KANKI-L, ISLAMPUR-SN, BALURGHAT-L
+* **NORTHERN (NR):** DINHATA, MAYNAGURI, BAXIRHAT, HUSLUDANGA, BASIRHAT, BELAKOBA, DHUPGURI, HALDIBari, BAMANHAT, TOOFANGANJ, MATHABHANGA, COOCHBEAR, CHOWDHURIHAT, DEWANHAT, BAROBISHA
+* **ODISHA (OD):** BHADRAK
+* **BANGLADESH (BD):** BANGLADESH
+
+
+AREA_GRP	AREA_CODE	AREA_DESC
+AS	AS001	AS TRB
+AS	AS002	AS KRPT
+AS	AS003	AS BLP
+AS	AS004	AS NWG
+BD	BD001	BANGLADESH
+BR	BR001	BR PRN
+BR	BR002	BR PRN L
+BR	BR003	BR KNE L
+BR	BR004	BR KNE
+BR	BR005	BR MUR
+BR	BR006	BR KNE B
+BR	BR007	BR KNE A
+NR	NR001	NR MYN
+NR	NR002	NR BAM
+NR	NR003	NR BEL
+NR	NR004	NR DIN
+NR	NR005	NR BAX
+OD	OD001	ODISHA
+SB	SB001	S BENGAL
+SB	SB002	SB SHE
+SB	SB003	S BENGAL 2 JCI
+SB	SB004	SB HRP
+SB	SB005	SB LOOSE
+SB	SB006	SB DHU
+SB	SB007	SB CHP
+SB	SB008	SB HB
+SN	SN001	SEMI NR TUL
+SN	SN002	SEMI NR 1 KNK
+SN	SN003	SEMI NR 2 KLY
+SN	SN004	SEMI NR 3 ISP
+SN	SN005	SEMI NR 4 JUN
+SN	SN006	SEMI NR 5 LOO
+SN	SN007	SEMI NR 6 GRP
+SN	SN008	SEMI NR 7
+
+
+Broker Code	Broker
+10000001	PANNA LAL JAIN & SONS (HUF)
+10000002	BENGAL JUTEX
+10000003	KRISHAN KUMAR AGARWALA
+10000004	GOURI SHANKAR CO.
+10000005	GOYEL JUTE SUPPLY
+10000006	JAMNOTRI TRADERS (P) LTD.
+10000007	DINESH KUMAR TOSHNIWAL
+10000008	GOPAL ENTERPRISES
+10000009	UTTAM KUMAR JAJU
+10000010	LACHHIRAM NATHMULL
+10000011	PROMOD KUMAR JAIN & SONS (HUF)
+10000012	SHREE HANUMAN TRADING CO.
+10000013	S.D.TRADERS
+10000014	SANVEEN INVESTMENT PVT.LTD.
+10000015	VINAYAK JUTE MARKETING PVT.LTD.
+10000016	SAVOY ENTERPRISES LTD.
+10000017	SHREE MAHADEO FIBRES
+10000018	KAMAL KUMAR RAIJADA
+10000019	MUNDHRA MERCANTILE PVT.LTD.
+10000020	SANJAY KUMAR THARD (HUF)
+10000022	RAGHUNANDAN AGARWALA
+10000023	SUBRATA BISWAS
+10000024	SURAJMAL RAMPRASAD
+10000025	BALAJI ENTERPRISES (IN)
+10000026	UDAICHAND DEBIPRASAD MAHESHWARI (HU
+10000027	THARD PVT LTD
+10000028	KAMAL UDYOG
+10000029	JAI JAI DEALCOM (P) LTD.
+10000030	DIBYA JYOTI LTD.
+10000031	GIRIDHAR TRADING CO.
+10000032	G.K.ENTERPRISES
+10000033	JETH MALL SURAJ MALL
+10000034	VISHAKHA PODDAR
+10000035	SAURAV LOHIA & COMPANY
+10000036	A.MORE & CO.
+10000038	RAJ KUMAR SANJAY KUMAR HUF
+10000039	FUTURE POINT
+10000040	TARAKNATH ENTERPRISE
+10000041	SAILESH FIBRE SALES
+10000042	DIVIJ THARD (HUF)
+10000043	SAHA ENTERPRISE
+10000044	SHRI MADHAV ENTERPRISES
+10000045	BISHESWAR LAL INDERCHAND (HUF)
+10000046	SURAJMALL DUDHANI & SONS
+10000047	SHIVAM ENTERPRISES..
+10000048	KHETULAL PUGALIA & SONS (HUF)
+10000049	DIVIJ PROJECTS PVT. LTD.
+10000050	NARAYAN TRADING CO.
+10000051	MAMATA SAHA
+10000052	NEMAI CHAND BISWAS
+10000056	BANAMALI MONDAL
+10000058	ARUN KUMAR SAHA
+10000059	GAWARJA POLYJUTE PVT. LTD.
+10000060	RAKESH GHOSHAL
+10000061	JAGDATRI TRADE LINKS PRIVATE LIMITE
+10000062	SRI JAGDAMBA TRADERS
+10000063	NK TRADECOM
+10000064	GHOSHAL TRADERS PRIVATE LIMITED
+10000066	ANANDI DEVI JAJU
+10000067	PRADIP KUMAR SUREKA
+10000068	KUSUM SUREKA
+10000069	SABLAWAT JUTE INDUSTRIES PVT. LTD.
+10000070	SINGHANIA TRADERS
+10000071	GAYETRY TRADING
+10000072	RADHE KRISHNA ENTERPRISES
+10000073	MUKESH KUMAR BAJAJ (HUF)
+10000074	BHAGWATI PRASAD MUNDHRA (HUF)
+10000075	MAANEK  UDYOG
+10000076	MADANLAL MUKESH KUMAR CHORARIA (HUF
+10000077	RAJ KUMAR CHORARIA & SONS (HUF)
+10000078	PRABHA TRADERS
+10000080	ROSHAN TRADERS
+10000081	DIPAK KUMAR SUREKA AND OTHERS HUF
+10000082	MAHESH KUMAR SUREKA AND OTHERS HUF
+10000083	SANDIP SUREKA HUF
+10000084	SONU SUREKA
+10000085	SANDIP SUREKA
+10000086	MANISHA SUREKA
+10000087	SUMITRA DEVI SUREKA
+10000088	UMA SUREKA
+10000089	JIBITA SAHA
+10000090	SAROJ AGRO FIBRES PVT. LTD.
+10000091	NIRANJAN AGARWALA
+10000092	DIPAK KUMAR SUREKA
+10000093	MURALIDHAR SUREKA & OTHERS HUF
+10000094	ANANDA KUMAR SAHA
+10000095	MAHESH KUMAR KHEMKA (HUF)
+10000096	PRADIP KUMAR SUREKA HUF
+10000097	BISHNU KUMAR SUREKA AND OTHERS HUF
+10000098	SEEMA SUREKA
+10000099	SANTOSH KUMAR PUGALIA
+10000100	ATUL TIE-UP (P) LTD.
+10000101	GLITTER DEALCOM PVT. LTD
+10000102	ARHAM TRADERS
+10000103	MERAQUI VENTURES PRIVATE LIMITED
+10000104	SANJAY IMPEX
+10000105	THARD VYAPAR PRATISTHAN PVT LTD
+10000106	NISHAN SUREKA
+10000107	JEMINI VINCOM PVT LTD
+10000108	PADMAVATI ENTERPRISE
+10000109	DIBYA JYOTI PRIVATE LIMITED
+10000110	TEJASVI ENTERPRISE
+10000111	VINAYAK ABASAN PVT LTD
+10000112	SANJAY KUMAR PODDAR (HUF)
+10000113	APPEAR COMMOTRADE PVT LTD
+10000114	MUKTA RAM DAS
+10000115	PUSHHPA TRADERSS
+10000116	TOLIASWWAAR ENTERPRISES
+10000117	MATHURADASS BHAGWANDASS
+10000119	HANUMAN MALL GOUTI
+10000215	MURLIDHAR RATANLAL EXPORTS LTD.
+10000319	BALAJI ENTERPRISE (BD)
+10000329	SK NUR ALAM
+10000396	MURLIDHAR RATANLAL EXPORTS LTD.
+10000532	NARAYAN SARDA ( HUF)
+10000533	KISHAN SARDA
+10000534	KAMRUP (JUTE & GUNNY) SAL
+10000535	S.K. ENTERPRISES
+10000536	CHANDRA PRAKASH MUNDRA
+10000537	ALLWORTH NIRMAN PRIVATE LTD
+10000538	MREL (UNIT-INDIA JUTE MILL)
+10000539	HASTINGS MILL LTD.
+10000540	DILIP KUMAR SAND
+10000541	DWIJESH  PAL
+10000542	HIRAN SINGH NAHAR
+10000543	JUTE SUPPLIERS
+10000544	MAHESH JUTE SUPPLY
+10000545	MORE BROTHERS ENTERPRISE LLP
+10000546	RAJENDRA KUMAR CHORARIA (HUF)
+10000547	ROSHAN CHORARIA HUF
+10000568	ANJALI TRADERS
+10000958	R.M.ENTERPRISES
+10001040	KAJARIA YARNS & TWINES LTD.
+10001051	LAXMI ENTERPRISE
+10001104	G.M.TRADING CO.
+10001403	TIRUPATI TRADING CO.
+10001429	SANJAY TRADING CO.
+10001589	MURLIDHAR RATANLAL EXPORTS LTD. HO
+10001922	SHANKAR TRADERS
+10001932	ASHIS ENTERPRISES
+10002398	KHAITAN ENTERPRISES
+10002598	A. J. TRADERS
+10002599	A. K. ENTERPRISE
+10002600	AABISHEK TRADERS
+10002601	AADARSH TRADING
+10002602	AADIJIT ENTERPRISES
+10002603	AARTI TRADING
+10002604	AASHISH DAGA
+10002606	ABDUL ALIM SARDAR
+10002607	ABDUL ALIM SHEIKH
+10002608	ABDUL GONI SHEIKH
+10002609	ABDUL HAMID KHAN
+10002610	ABDUL HANNAN
+10002611	ABDUL SALAM
+10002612	ABDUR RAFI CHAKDAR
+10002613	ABDUR RAHMAN
+10002615	ABDUR RASID
+10002616	ABHIJIT PATRA
+10002617	ABHISHEK AGARWAL
+10002618	ABID HUSSAIN
+10002619	ABU SALAM
+10002620	ABUL KASEM
+10002621	ADARSH KEDIA
+10002622	ADISH TRADING
+10002623	AFSAR ALI SHAIKH
+10002624	AHID GAIN
+10002625	AINUL BARI
+10002626	AJAY AGARWALA
+10002627	AJAY KUMAR SARDA
+10002628	AKASH KOTHARI
+10002629	AKASH SUREKA
+10002630	AKBAR ALI
+10002631	AKHILESH BHAGAT
+10002632	ALAM ENTERPRISES
+10002633	ALAUDDIN
+10002634	ALAUDDIN MANDAL
+10002635	ALI AHAMAD
+10002636	ALI BDDIN SHEKH
+10002637	ALIK SARKAR
+10002638	ALIMUDDIN
+10002639	ALKA SETHIA
+10002640	ALL TRADE COMMISIONER
+10002641	ALLWORTH NIRMAN PRIVATE LIMITED
+10002642	AMAN CHHAWCHHARIA
+10002643	AMAN FIBRES
+10002644	AMAR CHAND AGARWALA
+10002645	AMAR CHAND AGARWALA HUF
+10002646	AMAUL ISLAM
+10002647	AMINUL HOQUE
+10002648	AMIT KUMAR BOTHRA
+10002649	AMIT KUMAR SURANA
+10002650	AMIT MAITY JUTE TRADERS
+10002651	AMIT PODDAR
+10002652	AMITA AGARWALLA
+10002653	AMRUL MOLLA
+10002654	ANANDA BAIDYA
+10002657	ANANT ENTERPRISES
+10002658	ANARUL ISLAM SARKAR
+10002659	ANARUL SEKH
+10002660	ANGEJ BEGUM
+10002661	ANGEL ADVISORY SERVICES P.LTD.
+10002662	ANIKUL HOQUE
+10002663	ANIKUL TRADERS
+10002664	ANIL AGARWALLA
+10002665	ANIL KUMAR SAHA
+10002666	ANIL PAUL
+10002667	ANIMESH CHANDA
+10002668	ANISUR RAHAMAN
+10002669	ANITA DHARIWAL
+10002670	ANITA JAIN
+10002671	ANJALI PAUL
+10002673	ANJANA BHOWMIK
+10002674	ANJANI SARDA
+10002675	ANJANI SARDA HUF
+10002676	ANJU MUNDRA
+10002677	ANKIT TRADERS
+10002678	ANKITA KEDIA
+10002679	ANMOL TRADING COMPANY
+10002680	ANNAPURNA DEVI LADDA
+10002681	ANNAPURNA JUTE ENTERPRISES
+10002682	ANNAPURNA JUTE SUPPLY
+10002683	ANOWAR HOSSAIN
+10002684	ANTIMA TRADING
+10002685	ANUKUL SARKAR
+10002686	ANUPAMA TULSHAN
+10002687	ANWAR HUSSAIN
+10002688	APARNA SARKAR
+10002689	ARALIA COMMODITIES PVT. LTD.
+10002690	ARATI SINGHA
+10002691	ARCHANA PAL
+10002692	ARIF MALITHYA
+10002693	ARILIT DEY
+10002694	ARINDAM CHAKRABORTY
+10002695	ARJUN HALDER
+10002697	ARJUN SARKAR
+10002698	ARON AGRO PRODUCTS
+10002699	ARPITA NAG DEY
+10002700	ARUN KUMAR AGARWAL
+10002701	ARUN KUMAR PERIWAL
+10002703	ARUN KUMAR SUREKA
+10002704	ASHAFUDDOULA BISWAS
+10002705	ASHARAM MOHATA
+10002706	ASHIM ROY
+10002707	ASHIM SARKAR
+10002708	ASHIS BHAGAT
+10002709	ASHIS BHAGAT & OTHER'S HUF
+10002710	ASHIS DEY
+10002711	ASHIS GHOSH
+10002712	ASHIS KUMAR SAHA
+10002713	ASHOK KUMAR BHAGAT
+10002714	ASHOK KUMAR DARAK
+10002715	ASHOK KUMAR JAIN (HUF)
+10002716	ASIKUL ISLAM
+10002717	ASIM NAG
+10002718	ASIT KUMAR DAS
+10002719	ASIT KUMAR TARAFDER
+10002720	ATAUR RAHMAN
+10002721	AYAN PAUL
+10002722	AZAD ALI
+10002723	B.K.KEDIA (HUF)
+10002724	B.L. BIHANI (HUF)
+10002725	B.N.B.
+10002726	BABITA AGARWALA
+10002727	BABLU SEKH
+10002728	BADAL KUMAR
+10002729	BADAL SARKAR
+10002730	BAID BROTHERS
+10002731	BAJRANG TRADING
+10002733	BALAJI JUTE SUPPLY
+10002734	BALAJI TRADERS
+10002735	BALARAM BISWAS
+10002736	BALI AGRO PRODUCTS
+10002738	BANGSHI BADAN SAHA
+10002739	BANWARI LAL AGARWALA
+10002740	BAPPA SARKAR
+10002741	BARJI TRADING CO.
+10002742	BARKAT- I - KHODA
+10002743	BARUN SAHA
+10002744	BASANT KUMAR JAIN
+10002745	BASANTI DHARIWAL
+10002746	BASUDEB AGARWALA
+10002748	BASUKINATH TRADERS
+10002749	BATA KRISHNA PODDAR
+10002750	BEGANI BROTHERS
+10002751	BEGRAJ DALCHAND
+10002752	BENI CHAND AGARWALA
+10002753	BHAGAT STORES
+10002754	BHAGIRATHMAL AGARWALA
+10002756	BHAKTA MONDAL
+10002757	BHANWAR LAL BISHNOI
+10002758	BHANWAR LAL CHHAJER
+10002759	BHANWAR SINGH KARNAWAT
+10002760	BHANWARLAL SURENDRA KUMAR
+10002761	BHARAT BISWAS
+10002762	BHARAT DUGAR HUF
+10002763	BHARAT TRADERS
+10002764	BHARATI SAHA
+10002765	BHAWANI SHANKER AGRAWAL
+10002766	BHAWANI SHANKER AGRAWAL (HUF)
+10002767	BHERADASH BANG
+10002768	BHIKAM CHAND DAGA
+10002769	BHOLA NATH AGARWALA
+10002770	BHOLANATH GARAI
+10002771	BHOPAT RAM BAID
+10002772	BHURA JUTE SUPPLY
+10002773	BIAJY KRISHNA BODHAK
+10002774	BIBEK SAHA
+10002775	BIJAY KUMAR AGARWAL HUF
+10002776	BIJAY KUMAR BIHANI
+10002777	BIJAY KUMAR PERIWAL
+10002778	BIJAY SINGHANIA
+10002779	BIJOY BISWAS
+10002780	BIJOY KUMAR JAIN HUF
+10002781	BIKASH CHANDRA PAUL
+10002782	BIKASH CHIRANIA & SONS (HUF)
+10002783	BIKASH ENTERPRISES
+10002784	BIKASH TRADING CO.
+10002785	BIMAL CHANDRA BARMAN
+10002786	BIMAL CHANDRA SAHA
+10002787	BIMAL KUMAR SAHA
+10002788	BIMAN CHANDRA PAUL
+10002789	BINOD AGARWALA
+10002790	BINOD KUMAR AGARWALA
+10002791	BINOD KUMAR DAGA
+10002792	BINOD KUMAR DAGA & SONS (HUF)
+10002793	BINOD KUMAR KEDIA
+10002794	BINOD KUMAR MOHIT KUMAR (HUF)
+10002795	BINOD KUMAR SHARMA
+10002796	BINOD MONDAL
+10002797	BINOD TRADING COMPANY
+10002798	BINOY SAHA
+10002799	BIPLAB GHOSH
+10002800	BIPLAB KABIRAJ
+10002801	BIRENDRA KUMAR BHURA
+10002802	BISHAL HALDER
+10002803	BISHNU KUMAR SARDA HUF
+10002804	BISHNU KUMAR SUREKA & OTHER HUF
+10002805	BISHWANATH JHAWAR
+10002806	BISWAJIT KAR
+10002807	BISWAJIT MAJUMDAR
+10002809	BISWANATH KARMAKAR
+10002810	BITTU JAIN
+10002811	BOLBOM TRADERS
+10002812	BONOMALI PATRA
+10002813	BRINDABAN GHOSH
+10002814	BROJO MOHAN AGARWALA (HUF)
+10002815	BROJOGOPAL KUNDU
+10002816	BUDDHADEB GARAI
+10002817	BUDHRAM AGARWALLA
+10002818	CHAIN SUKH JAIN
+10002819	CHAIN SUKH JAIN (HUF)
+10002820	CHAMPALAL SUKHLECHA & SONS HUF
+10002821	CHANCHAL KUMAR SAILA
+10002822	CHANDA DEBI AGARWALA
+10002823	CHANDA DEVI GOLCHHA
+10002824	CHANDA DEVI PUGALIA
+10002825	CHANDMAL SANTOK CHAND
+10002826	CHANDRA AGENCY
+10002827	CHANDRA KANTA GHOSH
+10002829	CHHAGAN MAL LADDA
+10002830	CHHAGAN MAL LADDA (HUF)
+10002831	CHHAGANLAL LOONKARAN SETHIA (HUF)
+10002832	CHHIATULLA MANDAL
+10002833	CHIRANJIB BISWAS
+10002834	CHOUDHARY STORES
+10002835	CHUNNILAL LAXMINARAYAN
+10002836	DALCHAND SOMANI HUF
+10002837	DALIYA DE
+10002838	DEB ENTERPRISE
+10002839	DEB KUMAR GHOSH
+10002840	DEBABARTA BISWAS
+10002841	DEBAKI NANDAN SUREKA
+10002842	DEBANANDA BHADURI
+10002843	DEBASHISH GHOSH
+10002844	DEBASIS DEY
+10002845	DEBASIS DUTTA
+10002846	DEBASIS SARKAR
+10002847	DEBASISH DAS
+10002848	DEEPA DEVI AGARWALLA
+10002849	DEEPAK KOTHARI
+10002850	DEVAKI NANDAN AGRAWAL
+10002851	DEVAKI NANDAN AGRAWAL HUF
+10002853	DHAKA TRADING HOUSE LTD.
+10002854	DHANANJAY KUMAR MISHRA
+10002855	DHARAM CHAND BOTHRA & SONS HUF
+10002856	DIBYENDU KUNDU
+10002857	DILIP BHOWMICK
+10002858	DILIP BHOWMICK JUTE SUPPLY
+10002860	DILIP SARKAR
+10002861	DIN MAHAMMAD
+10002862	DINDAYAL SHARMA
+10002863	DINESH ASSAWA
+10002864	DIPA SUREKA
+10002865	DIPAK AGARWALA
+10002867	DIPAK KUMAR GHOSH
+10002869	DIPAK KUMAR SUREKA & ORS (HUF)
+10002870	DIPAK PAUL
+10002871	DIPALI BISWAS
+10002873	DITIKA COMMERCIAL
+10002874	DIVYA  AGRAWAL
+10002875	DOSIRUDDIN MIAH
+10002876	DULU DUTTA
+10002877	DURGA DEVI RATHI
+10002878	DWAIPAYAN GHOSH
+10002880	EJAJUL HAQUE
+10002881	EUNUS ALI
+10002882	FARHA KHATUN
+10002883	FASTREST GROWTH ENTERPRISE
+10002884	FIBER N FIBRE
+10002885	FIRDOUSI BEGUM
+10002886	FIROJ AHAMMED
+10002887	G. S ENTERPRISE
+10002888	G.M.MUNDHRA & SONS (HUF)
+10002889	G.S.JUTE
+10002890	GANESH AGARWALA
+10002891	GANESH AGARWALLA
+10002892	GANESH AGARWALLA (HUF)
+10002893	GANESH CH ANDRA GHOSH
+10002894	GANESH CHOUDHARY
+10002895	GANESH JUTE TRADING
+10002896	GANESH KUMAR GOENKA
+10002897	GANESH PRASAD GUPTA
+10002898	GANESH TRADING
+10002899	GANGA TRADING
+10002900	GANPATI JUTE TRADING
+10002901	GANPATI SUPPLIER
+10002902	GANPATI TRADERS
+10002905	GEETA ENTERPRISE
+10002906	GIRDHARILAL RAJESKUMAR
+10002907	GIRIDHAR TRADING CO (DO NOT USE)
+10002908	GIRIDHARI LAL BHUTRA
+10002909	GIRIDHARILAL BHAGAT (HUF)
+10002910	GIRISH LAHOTI
+10002911	GOBIND KUMAR AGARWALA
+10002912	GOLAM AHAMAD HASAN
+10002913	GOLAM EHIA
+10002914	GOLAPI BISWAS
+10002915	GOPAL AGARWALA
+10002916	GOPAL BHAGAT (HUF)
+10002917	GOPAL CHAND  BAJAJ & SONS
+10002918	GOPAL CHANDRA SAHA
+10002920	GOPAL GHOSH
+10002921	GOPEN MONDAL
+10002922	GOPI NATH JANA
+10002923	GOPI NATH ROY
+10002924	GOURAB SHAW
+10002925	GOURI SANKAR AGARWALA
+10002926	GOURI TRADING CO.
+10002927	GOUTAM DAS
+10002928	GOUTAM KUMAR DEY
+10002929	GOUTAM SARKAR
+10002930	GUPTA TRADERS
+10002931	HAFIJUL ALI
+10002932	HAKIKUL ISLAM
+10002933	HAMEDUL MALITYA
+10002934	HANUMAN PRASAD DWARIKA PRASAD
+10002935	HANUMAN TRADING
+10002936	HAPIJUL SEKH
+10002937	HARAHAR MONDAL
+10002938	HARIPADO MAJUMDAR
+10002939	HARISH CHANDRA CHOUDHARY
+10002940	HARISH LAHOTI
+10002941	HARSH BARDHAN DHARIWAL
+10002942	HASIBUR RAHAMAN
+10002943	HASTINGS MILL P.LTD.
+10002944	HEDATULLA SEKH
+10002945	HEMA AGARWALLA
+10002946	HEMANT JAIN
+10002947	HEMANT KUMAR GUPTA
+10002948	HEMANTA HAZRA
+10002949	HIDAY MONDAL
+10002950	HIRA LAL BAJAJ
+10002951	HONEY ENTERPRISE
+10002952	HULASH MAL LUNAWAT
+10002953	HUMAYAN KABIR
+10002954	HUSSAIN TRADERS & CO.
+10002955	IFTAHAR ALI
+10002956	IKBAL SARKAR
+10002957	INDRA DEVI BIHANI
+10002958	INDRAJIT PAUL
+10002959	INNAL SHEIK
+10002960	J. M. AGRO TRADERS
+10002961	J.I.S. ENTERPRISE
+10002962	J.P.CHOUDHUARY & SONS HUF
+10002963	J.S.JUTE SUPPLY
+10002964	JADAB MALLIK
+10002965	JAGADAMBA TRADING COMPANY
+10002966	JAGADISH PRASAD BHAGAT
+10002967	JAGADISH PRASAD BIHANI
+10002968	JAGAT BANDHU DUTTA
+10002969	JAGDAMBA JUTE TRADING
+10002971	JAGDISH PRASAD BIHANI HUF
+10002972	JAGDISH PRASAD CHOUDHARY
+10002973	JAGDISH PRASAD RATHI
+10002974	JAHANARA PARVEEN
+10002975	JAI BALAJI TRADERS
+10002976	JAI JAI DEAL COM (P) LTD.
+10002977	JAICHANDLAL SUKHLECHA & SONS HUF
+10002978	JAIN JUTE SUPPLY
+10002979	JAIN TRADERS
+10002980	JAISWAL TRADING CO.
+10002981	JAJODIA EXPORTS PVT. LTD.
+10002982	JAKIR SEIKH
+10002983	JALANGI INDUSTRIAL CORPORATION
+10002984	JAMIRUL HOQUE
+10002985	JAMNOTRI TRADERS P.LTD.
+10002986	JAMUNA ENTERPRISE
+10002987	JANARDAN BHAGAT
+10002988	JANATOSH MONDAL
+10002989	JAOD ALI MONDAL
+10002990	JATAN BHAGAT HUF
+10002991	JATAN LAL BHAGAT
+10002992	JATASHIV COMMODEAL P.LTD.
+10002993	JAY ENTERPRISE
+10002994	JAY LAXMI TRADERS
+10002995	JAY SHREE GANESH TRADING
+10002996	JAY TULSI JUTE SUPPLY
+10002997	JAYDEB MODAK
+10002998	JEEVRAJ JAIN (HUF)
+10002999	JHABARMAL SRINARAYAN
+10003000	JHANTU MANDAL
+10003001	JHANWAR LAL JAIN
+10003002	JHANWARLAL DAGA
+10003003	JHANWARLAL DAGA & SONS
+10003004	JHARNA TALUKDAR
+10003005	JIBAN KRISHNA MANDAL
+10003006	JIBAN KRISHNA SAHA
+10003007	JIBAN NANDI
+10003008	JIBESWAR SAHA
+10003010	JITENDRA KUMAR
+10003011	JITENDRA KUMAR BOTHRA
+10003012	JOBAIR HOSSAIN
+10003013	JOTIN MANDAL
+10003014	JOY GURU TRADING
+10003015	JOY PRAKASH NUHIWAL
+10003016	JOYDIP PAUL
+10003017	JUTE CORPORATION TRADERS
+10003018	JYOTI DEVI
+10003019	JYOTI PRAKASH RATHI
+10003020	JYOTI PRASAD GHOSH
+10003021	JYOTI TRADING COMPANY
+10003022	JYOTISH SAHA
+10003023	JYOTISH SAHA JUTE SUPPLY
+10003024	JYOTSNA GHOSH
+10003025	JYOTSNA SARKAR
+10003026	K & B UDYOG
+10003027	K.G.N. TRADERS
+10003028	KABAT ALI BISWAS
+10003029	KABUL AGARWALLA
+10003030	KADAM ALI
+10003031	KAHINUR
+10003032	KAILASH MUNDRA
+10003033	KAILASH MUNDRA (HUF)
+10003034	KAILASH NARAYAN MOHATA
+10003035	KAILASH SHARMA
+10003036	KAKALI PAUL
+10003037	KALIDAS MONDAL
+10003038	KALYAN SARKAR
+10003039	KAMAKHYA TRADING CO
+10003040	KAMAL HOQUE
+10003041	KAMAL KUMAR GADHIA
+10003042	KAMAL SINGH FULFAGAR
+10003043	KAMAL SINGH JAIN
+10003044	KAMAL TRADERS
+10003045	KAMLA DEVI RATHI
+10003046	KAMLA JUTE LLP
+10003047	KANAK DEVI CHORARIA
+10003048	KANCHAN DEVI PUGALIA
+10003049	KANHAYA LAL BAID
+10003050	KANIKA DUTTA
+10003051	KANTA AGARWALLA
+10003052	KANTA DEVI SURANA
+10003053	KAOCHAR GAIN
+10003054	KARNI JUTE SUPPLY
+10003055	KARTICK CHANDRA DEY
+10003056	KARTICK DUTTA
+10003057	KAUSHIK DEY
+10003058	KAVITA PAREEK
+10003059	KAVYA TRADING
+10003060	KERAMUDDIN AHAMED
+10003061	KESHAB PRASAD GUPTA (HUF)
+10003062	KESHAR MAL JAIN
+10003063	KESHARMALL KUMAR JAIN AND SONS (HUF
+10003064	KESHAW LAL KEDIA
+10003065	KHATU SHYAM ENTERPRISE
+10003066	KHETA RAM MOHATA
+10003067	KHETULAL PUGALIA
+10003068	KHURSEDA KHATUN
+10003069	KHUSHBU CHORARIA
+10003070	KHUSHBU GELERA
+10003071	KIRAN AGARWALA
+10003072	KIRAN SARDA
+10003073	KISHAN GOPAL MOHATA
+10003074	KISHAN JAIN
+10003076	KISHAN SARDA (HUF)
+10003077	KISHAN TRADING CO.
+10003078	KISHOR KUMAR JAIN
+10003079	KISHOR KUMAR MAHESWARI
+10003080	KOLLAL BISWAS
+10003081	KOMAL AGARWAL
+10003082	KOSHLYA BIHANI
+10003083	KOTHARI TRADE CENTRE
+10003084	KOUSHAL LAHOTI
+10003085	KOUSHIK SARKAR
+10003086	KOUSIK BISWAS
+10003087	KRISHNA DEY
+10003088	KRISHNA KUMAR PRADEEP KUMAR
+10003089	KRISHNA MAHESWARI
+10003090	KRISHNA SARDA
+10003091	KUMUD BISWAS
+10003092	KUNDU ENTERPRISE
+10003093	KUSUM AGARWALLA
+10003094	KUSUM DEVI KOTHARI
+10003095	KUSUM KEDIA
+10003097	KUTUBUDDIN
+10003098	LAHA ENTERPRISE
+10003099	LAKSHMI ENTERPRISE
+10003100	LALIT AGRAWAL
+10003101	LALIT KUMAR AGARWALA
+10003102	LALITA DEVI BHAGAT
+10003103	LALITA ENTERPRISES
+10003104	LALITA MURARKA
+10003105	LALITA TRADING COMPANY
+10003106	LAXMI BHAGAT
+10003107	LAXMI BIHANI
+10003108	LAXMI DEVI GOENKA
+10003110	LAXMI PAT HIRAWAT
+10003111	LAXMI TRADERS
+10003113	LAXMI TRADING
+10003114	LEENA KOTHARI
+10003115	LINTES ENTERPRISES
+10003116	LIPIKA PAUL
+10003117	LOKESH JUTE SUPPLY
+10003118	LOONKARAN SETHIA
+10003119	LOONKARAN SETHIA & SONS (HUF)
+10003120	LUCKY SAHA
+10003121	M.B.TRADING CO.
+10003122	M.GHOSH & COM
+10003123	M.K.TRADING
+10003124	M.L.SARKAR & BROTHERS
+10003125	M.M.ENTERPRISE
+10003126	M.N.JUTE TRADING
+10003127	M.R.E.L. (BARSHUL TEX)
+10003128	M.R.E.L. (GONDALPARA JUTE MILL)
+10003129	M.R.E.L. (INDIA JUTE MILL)
+10003130	M.R.E.L.(HASTINGS JUTE MILL)
+10003131	M.R.KOTHARI & SONS (HUF)
+10003132	M.S.M. BHANDAR
+10003133	MA DURGA TREDERS
+10003134	MAA TARA ENTERPRISE
+10003135	MA TARA TRADERS
+10003136	MAA AMBEY ENTERPRISE
+10003137	MAA DURGA TRADING CO.
+10003138	MAA KALI TRADING
+10003139	MAA KALI TRADING CO.
+10003140	MAA MANASAKALI TRADERS
+10003141	MAA MANASHA TRADING
+10003142	MAA MONOSA TRADERS
+10003143	MAA NANDINI TRADERS
+10003144	MAA TARA JUTE TRADING CO.
+10003145	MAA TARA TRADERS
+10003147	MADAN MOHAN GHOSH
+10003149	MADHU BAID
+10003150	MADHUSUDAN GHOSH
+10003151	MAHABIR JUTE CO.
+10003152	MAHABIR JUTE SUPPLY
+10003154	MAHABIR PRASAD DUDHANI & SONS (HUF)
+10003155	MAHABIR TRADING
+10003156	MAHABUL
+10003157	MAHAMAYA TRADERS
+10003158	MAHAMAYA TRADING
+10003159	MAHAPRABHU TRADERS
+10003160	MAHAR ALI
+10003161	MAHAVIR PRASAD SOMANI
+10003162	MAHAVIR TRADERS
+10003163	MAHAVIR TRADING CO.
+10003164	MAHENDRA KUMAR BAID
+10003165	MAHENDRA KUMAR JAIN HUF
+10003166	MAHENDRA KUMAR KALAYANI (HUF)
+10003167	MAHESH KUMAR SUREKA & ORS HUF
+10003169	MAHIBUL ISLAM
+10003170	MAHIMA TRADING
+10003171	MAHIMUR CHOWDHURY
+10003172	MAHIRUDDIN MONDAL
+10003173	MAKSUD ALAM
+10003174	MALA DEVI AGARWALA
+10003175	MALAKU BIBI
+10003176	MAMATA DEVI DAGA
+10003178	MAMOL DEVI JAIN
+10003179	MAMTA AGRAWAL
+10003180	MAMTA JUTE SUPPLY
+10003181	MANAB MALLICK
+10003182	MANAN ENTERPRISE
+10003183	MANASHI PAUL
+10003184	MANGAL CHANDRA MAZUMDAR
+10003185	MANGAL PAUL
+10003186	MANGALDHAN COMMOTRADE PVT LTD
+10003187	MANGEJ SINGH
+10003188	MANIK CHAND SOMANI
+10003189	MANIK CHANDRA DAS
+10003190	MANIKA BAFNA
+10003191	MANINDRA CHANDRA PAUL
+10003192	MANISH KEJARIWAL
+10003193	MANISH TRADING COMPANY
+10003194	MANISHA PAUL
+10003196	MANJU DEVI AGARWALA
+10003197	MANJU DEVI BEGWANI
+10003198	MANJU DEVI CHHAJER
+10003199	MANJU DEVI JAIN
+10003200	MANJU RATHI
+10003201	MANOJ AGARWALA
+10003202	MANOJ CHIRANIA
+10003203	MANOJ CHIRANIA & SONS
+10003204	MANOJ KUMAR AGARWAL
+10003205	MANOJ KUMAR AGARWAL & SONS HUF
+10003206	MANOJ KUMAR AGARWAL (HUF)
+10003207	MANOJ KUMAR DAGA
+10003208	MANOJ KUMAR DAGA (HUF)
+10003209	MANOJ KUMAR DARAK
+10003210	MANOJ KUMAR JAIN
+10003211	MANOJ KUMAR MOHATA
+10003212	MANOJ SOMANI
+10003213	MANORANJAN PRAMANIK
+10003214	MANORMA GUPTA
+10003215	MANOTOSH PAL
+10003216	MANSUR ALI
+10003217	MANTU BHOWMIK
+10003218	MARUTI TRADERS
+10003219	MASATON NASRIN
+10003220	MASUD KARIM
+10003221	MASUM TRADERS
+10003222	MATIAR RAHAMAN
+10003223	MAYA TRADING CO.
+10003224	MD. AACHHIBAR RAHAMAN
+10003225	MD. ADBAN ALI
+10003226	MD. AFZAL
+10003227	MD. ALAUDDIN SHAH
+10003228	MD. AMANULLAH
+10003229	MD. ASHADUL ISLAM
+10003230	MD. AYUB HUSSAIN
+10003231	MD. BABUR ALI
+10003232	MD. BAPI SEKH.
+10003233	MD. EMDADUL ISLAM
+10003234	MD. EUNUS ALI
+10003235	MD. FAKRULISLAM
+10003236	MD. IKBAL HOSSAIN
+10003237	MD. KAMARUL ISLAM
+10003238	MD. KOKIL MIAN
+10003239	MD. MAHAFIZUL HOQUE
+10003240	MD. MASHIDUL AKAM
+10003241	MD. MATIBUR RAHAMAN
+10003242	MD. MIRKASAIM
+10003243	MD. MIZANUR RAHMAN
+10003244	MD. MOSAREF HOSSAIN
+10003245	MD. MUSARAF HOSSAIN
+10003246	MD. MUSLIM
+10003247	MD. NAHIDUL ALAM
+10003248	MD. NAWAB SARIF
+10003249	MD. SAMSUL HAQUE
+10003250	MD. SUKURULLAH
+10003251	MD. TAIBUR RAHAMAN
+10003252	MD. ZAMARUL ISLAM
+10003253	MDB ENTERPRISES
+10003254	MEGHA ENTERPRISES
+10003255	MEGHDOOT BISWAS
+10003256	MIHIR ROY
+10003257	MINARANI SAHA
+10003258	MIRA DUTTA
+10003259	MIRAZUL ISLAM
+10003260	MITHU AGARWALA
+10003261	MITHUN SAHA
+10003262	MOBARAK HOSSAIN
+10003263	MOFAKHER KHAIRUL SARKAR
+10003264	MOFIJUR RAHAMAN
+10003265	MOHAMMAD BAPI SEKH
+10003266	MOHAN KUMAR GOENKA (HUF)
+10003267	MOHAR ALI
+10003268	MOHIT JAIN
+10003269	MOKADDES MALITYA
+10003270	MOKARIM HOSSAIN
+10003271	MOLOY SAHA
+10003273	MONIKA DAS
+10003274	MONIKA DEVI
+10003276	MOTIOR BEPARI
+10003277	MOUSKAN DARAK
+10003278	MUDIT KUMAR CHORARIA (HUF)
+10003279	MUKESH DHARIWAL
+10003280	MUKESH MEHTA
+10003281	MUKESH MEHTA & SONS (HUF)
+10003282	MUKESH RAM
+10003283	MUKESH TRADING COMPANY
+10003285	MUKTI PADA MAITY
+10003286	MUKUT LAL AGRAWALA
+10003287	MUNDRA MARCANTILES (P) LTD
+10003288	MUNJUR HOSSAIN
+10003289	MUNNI DEBI CHOUDHURY
+10003290	MURALI DHAR SUREKA & ORS HUF
+10003291	MURARKA TRADERS
+10003292	MURSHIDA BIBI MALITYA
+10003293	MUSTAKUL HAQUE
+10003294	N.SETHIA & CO
+10003295	N.SOMANI & SONS
+10003296	NABA KUMAR NANDI
+10003297	NABIN JAIN
+10003298	NABIN KUMAR SUREKA
+10003299	NAFTAHUL TRADERS
+10003300	NAGAR MAL SHARMA
+10003301	NAJIBUR RAHAMAN
+10003302	NAMAJI SHEIK
+10003303	NAMAN JUTE SUPPLIERS LLP
+10003304	NAMITA MORE
+10003305	NAMITA SARKAR
+10003306	NAND LAL MAHESHWARI
+10003307	NAND LAL RATHI
+10003308	NANDA KISHOR AGARWALA
+10003309	NANDALAL PAUL
+10003310	NANDITA MONDAL
+10003311	NARAYAN DAS
+10003312	NARAYAN MANDAL
+10003313	NARAYAN PRASAD RATHI
+10003314	NARAYAN SAHA
+10003315	NARAYAN SARDA (HUF)
+10003316	NARAYAN SHARMA
+10003317	NARAYAN SHARMA HUF
+10003318	NARAYAN TRADING COMPANY
+10003319	NARENDRA KUMAR JAIN
+10003320	NARESH AGARWALA
+10003321	NARGIS PARVIN
+10003322	NARSING TRADERS
+10003323	NARSINGH RAM PUROHIT HUF
+10003324	NASHIRUL ISLAM
+10003325	NASIDUL SEIKH
+10003326	NASIMA BISWAS
+10003327	NASIRUDDIN
+10003328	NATORE JUTE MILLS
+10003329	NATURA YARNS P.LTD.
+10003330	NAVIN JUTE SUPPLIER
+10003331	NAVIN KUMAR SINGH
+10003332	NAYANIKA TRADERS
+10003333	NEEDHI ENTERPRISE
+10003334	NEELAM AGARWAL
+10003335	NEELAM BHAGAT
+10003336	NEELAM DEVI DHARIWAL
+10003337	NEELAM MAHESHWARI
+10003338	NEHA SARDA
+10003340	NEPTUNE TRADER
+10003341	NETMAL AGARWALA
+10003342	NIJAM UDDIN SEIKH
+10003343	NIKHIL MANDAL
+10003344	NILAM AGARWALLA
+10003345	NILIMA SARDA
+10003347	NIRANJAN KUMAR RAY
+10003348	NIRANJAN SARKAR
+10003349	NIRMAL KUMAR BAID
+10003350	NIRMAL KUMAR SARAOGI
+10003351	NIRMAL SARKAR
+10003352	NIRMALA NUHIWAL
+10003353	NIRMALA TRADING CO.
+10003354	NIRUPAMA TRADING
+10003355	NISHA GHOSH
+10003357	NISHANT KUMAR
+10003358	NISHI KANTA SAHA
+10003359	NISHI TALUKDAR
+10003360	NITAI KUMAR DAS
+10003361	NITAI SAHA
+10003362	NITESH ENTERPRISES
+10003363	NITISH SAHA
+10003365	NORATMAL RAJESH KUMAR CHORARIA
+10003366	NUR MOHAMMAD
+10003367	NURASIDA MOLLA
+10003369	OM PRAKASH AGARWAL
+10003370	OM PRAKASH AGARWAL (HUF)
+10003371	OM PRAKASH BAHETI & SONS
+10003372	OM PRAKASH SARDA
+10003373	OM TRADING
+10003374	OMPRAKASH BAHETI
+10003375	OSMAN GONI
+10003376	OWNSTYLE TRADERS P.LTD.
+10003377	OYAHIDUR RAHAMAN SAFAKIR
+10003378	PABAN KUMAR DAS
+10003379	PADMAWATI MARKETING PVT.LTD.
+10003380	PAHARI MATA TRADING CO.
+10003381	PALAN CHANDRA PAUL
+10003382	PANKAJ AGARWALA
+10003383	PANKAJ AGARWALA (HUF)
+10003384	PANKAJ KUMAR SINGHI
+10003385	PANKAJ SUREKA
+10003386	PANMALL BOTHRA & CO.
+10003387	PANNADEVI SARDA
+10003388	PAPIA MONDAL
+10003389	PARASNATH TRADING CO.
+10003391	PARIMAL DAS
+10003392	PARIWAR JUTE
+10003393	PARTHA PAUL
+10003394	PARVEZ SAJJAD ALAM
+10003395	PARWATI DEVI MOHATA
+10003396	PARYAPT VINIMAY PVT. LTD.
+10003397	PAWAN KUMAR AGARWAL
+10003398	PAWAN KUMAR AGARWALA
+10003399	PAWAN KUMAR AGARWALA (HUF)
+10003400	PAWAN KUMAR BHURA
+10003401	PAWAN KUMAR MAHESWARI
+10003402	PAWAN KUMAR MODI
+10003403	PAWAN KUMAR PANDIA
+10003404	PAWAN KUMAR PANDIA HUF
+10003405	PAWAN TRADERS
+10003406	PAYEL BIBI
+10003407	PIARUL ISLAM
+10003408	PINAKI KUMAR AGARWALA (HUF)
+10003409	PINAKI SAHA
+10003410	PIYARUDDIN MONDAL
+10003411	PIYUSH CHOWDHURY
+10003412	POKARMAL AGARWALA
+10003413	POONAM CHAND PAREEK
+10003416	PRABIN AGARWALA
+10003417	PRABIR KUMAR SAHA
+10003418	PRABIR MONDAL
+10003419	PRABIR SUREKA
+10003420	PRADEEP KUMAR BANG & SONS (HUF)
+10003421	PRADEEP PARIK
+10003422	PRADI KUMAR AGARWALA
+10003423	PRADIP AGARWALA
+10003424	PRADIP BHAGAT HUF
+10003425	PRADIP KUMAR AGARWALA
+10003426	PRADIP KUMAR AGARWALA (HUF)
+10003427	PRADIP KUMAR KEDIA
+10003428	PRADIP KUMAR KEDIA & SONS HUF
+10003431	PRAFULLA CHANDRA DEBNATH
+10003432	PRAHALAD KUMAR CHOUDHARY
+10003433	PRAKASH BISWAS
+10003434	PRAKASH CHANDRA PAUL
+10003435	PRAKASH KUMAR GHOSH
+10003436	PRAKASH SARKAR
+10003437	PRAKASH TRADERS
+10003438	PRAMILA JUTE SUPPLY
+10003439	PRAMILA TRADING
+10003440	PRAN KRISHNA SAHA
+10003441	PRANAB KUMAR DUTTA
+10003442	PRANAB KUMAR RAHA
+10003443	PRASANTA SARKAR
+10003444	PRASENJIT MANDAL
+10003445	PRASHANTA KUMAR SAHA
+10003446	PRATAP KUMAR GANAI
+10003447	PREETI KANODIA
+10003448	PREETY BHAGAT
+10003449	PREM CHAND AGARWAL
+10003450	PREM CHAND SAH
+10003451	PREMCHAND AGARWALA & OTHERS (HUF)
+10003452	PRINYANKA AGARWALLA
+10003453	PRIYA DHARIWAL
+10003454	PRIYA TRADING COMPANY
+10003455	PRIYAJIT KUNDU
+10003456	PRIYANKA BHAGAT
+10003457	PRODYUT BISWAS
+10003458	PROSENJIT BISWAS
+10003459	PUJA DHARIWAL
+10003460	PUJA SHARMA
+10003461	PUKHARAJ DEBI  BAID
+10003462	PUKHRAJ CHOPRA HUF
+10003463	PUKHRAJ SINGHI
+10003464	PUNAM AGARWAL
+10003465	PUNAM SURANA
+10003466	PURNENDU KUMAR HAZRA
+10003467	PURSHOTAM LAL PARIK
+10003468	PURSOTAM DAS HUF
+10003470	PUSHPA AGARWAL
+10003471	PUTUL SARKAR
+10003472	R.D.B TEXTILES LTD.
+10003473	R.K. TRADERS
+10003474	RABI SAHA
+10003475	RABI TRADERS
+10003476	RABINDRA PAUL
+10003477	RABIUL
+10003478	RADHA DEVI SOMANI
+10003479	RADHE JUTE TRADERS
+10003480	RADHE RANI TRADING CO.
+10003481	RADHE SHYAM MOHTA
+10003482	RADHIKA DEBI GUPTA
+10003483	RAFIKUL MONDAL
+10003485	RAGHUNATH RAM
+10003486	RAHUL KUMAR SAHA
+10003487	RAHUL SULTANIA
+10003488	RAJ DEEP PAUL
+10003489	RAJ ENTERPRISES
+10003490	RAJ KUMAR BHAGAT
+10003493	RAJ KUMAR JAIN
+10003494	RAJASMITA ENTERPRISES
+10003495	RAJAT AGARWAL
+10003496	RAJEEV KUMAR KALYANI
+10003497	RAJENDRA KUMAR BAID
+10003498	RAJENDRA PRASAD KEDIA,
+10003499	RAJENDRANATH SUSHIL KUMAR
+10003500	RAJESH AGARWALA
+10003501	RAJESH KUMAR BIHANI (HUF)
+10003502	RAJESH KUMAR CHOUDHARY
+10003503	RAJESH KUMAR JAIN
+10003504	RAJESH KUMAR MEHTA
+10003505	RAJESH KUMAR MEHTA & SONS (HUF)
+10003506	RAJESH KUMAR MURARKA HUF
+10003507	RAJESH KUMAR SULTANIA
+10003508	RAJESH KUMAR TOLARAM RATHI (HUF)
+10003509	RAJESHWAR KOTHARI
+10003510	RAJIB BHAGAT
+10003511	RAJIB BISWAS
+10003512	RAJKUMAR DUTTA
+10003513	RAJKUMARI DHARIWAL
+10003514	RAJSHREE DHARIWAL
+10003515	RAJU BISWAS
+10003516	RAJU SAHA
+10003517	RAKHECHA HOLDING (P) LTD
+10003518	RAKHIBUL MANDAL
+10003519	RAKIB TRADERS
+10003520	RAM CHANDRA MAHESHWARI
+10003521	RAM CHANDRA SAHA
+10003522	RAM GOPAL AGARWALLA
+10003523	RAM JIWAN AGARWAL
+10003524	RAM KUMAR SARDA
+10003525	RAM KUMAR SARDA (HUF)
+10003526	RAM SANKAR SHAW
+10003527	RAMA SHANKAR RAUTH
+10003528	RAMANI DEVI CHORARIA
+10003529	RAMDEV BABA TRADING CO.
+10003530	RAMDEV INDUSTRIES LTD.
+10003531	RAMENDRA NATH BISWAS
+10003532	RAMESH BHAGAT
+10003533	RAMESH BHAGAT (HUF)
+10003534	RAMESH BISWAS
+10003535	RAMESH KUMAR KEDIA
+10003536	RAMESH KUMAR PANDIA
+10003537	RAMESH KUMAR PANDIA HUF
+10003538	RAMESHWAR LAL MALIRAM (HUF)
+10003539	RAMESWAR LAL MAHESWARI
+10003540	RAMOBATAR PODDAR
+10003541	RAMPROSAD DEY
+10003542	RANJIT DUTTA
+10003543	RANI SATI TRADING CO.
+10003544	RANI SATI TRADING COMPANY
+10003545	RANJAN SINGH
+10003546	RANJANA PANDIA
+10003547	RANJIT DHAR
+10003548	RANJIT KUMAR SAHA
+10003549	RANJIT MAL DHARIWAL
+10003550	RANJIT SAHA & SONS (HUF)
+10003551	RASHIDUL SARKAR
+10003552	RATAN  BAKSHI
+10003553	RATAN LAL BHAGAT
+10003554	RATAN LALL CHHAJER
+10003555	RATAN PODDAR
+10003556	RATANLAL AGARWALA
+10003557	RAUNAK ENTERPRISES
+10003558	RAVI KUMAR SOMANI
+10003559	RAWATMAL TARACHAND
+10003560	RBR ENTERPRISE
+10003561	REJAUL HOQUE
+10003562	REJEK ALI
+10003563	REKHA BHAGAT
+10003564	REKHA DHARIWAL
+10003565	REKHA KEDIA
+10003566	REKHA RATHI
+10003567	REKHA SARDA
+10003568	RENU AGARWALLA
+10003569	RICHA AGARWALA
+10003570	RIDDHI COMMERCIAL
+10003571	RIDDHI SIDDHI ENTERPRISES
+10003572	RIDHI TRADING CO.
+10003573	RIDIT TRADERS
+10003574	RIFAT TRADING
+10003575	RIK SUNDAR DAS
+10003576	RIMI MANDAL
+10003577	RINKU MANDAL
+10003578	RINTU DUTTA
+10003579	RISHAB DUGAR
+10003580	RITA CHOUDHARI
+10003581	RITA SARAWGI
+10003582	RIYA GHOSH
+10003583	ROCKY JUTE SUPPLY
+10003584	ROHAN ENTERPRISE
+10003585	ROHI DAS MANDAL
+10003586	ROHIT BHAGAT HUF
+10003587	ROHIT ENTERPRISES
+10003588	ROJINA BEGAM MONDAL
+10003589	RONAK CHOWDHURY
+10003590	ROSHAN ENTERPRISE
+10003591	ROSHAN NUHIWAL
+10003594	RUBIYA BISWAS
+10003595	RUMPA BISWAS
+10003596	RUNA PARVIN JUTE SUPPLY
+10003597	RUP KUMAR SAHA
+10003598	RUPCHAND NORATMAL CHORARIA (HUF)
+10003599	RUPNARAYAN DASMONDAL
+10003600	S. JAIN
+10003601	S. M. CHOPRA & CO.
+10003603	S.G.TRADERS
+10003605	S.M.JUTE & TRADING COMPANY
+10003606	S.N.TRADING
+10003607	S.R. PICKUP CENTER
+10003608	S.S.JUTE SUPPLY
+10003609	S.S.KAYAL & SON'S
+10003610	S.S.RUNGTA & CO.
+10003611	S.S.S. TRADING CO.
+10003612	SABIR ALAM
+10003613	SABLAWAT JUTE INDUSTRIES P LTD
+10003614	SABNAM SANAM
+10003615	SADHAN CHANDRA PAUL
+10003616	SADHANA BALO
+10003617	SADIKUL ALAM
+10003618	SAFIKUL HAQUE
+10003619	SAGAR BRAHMA
+10003621	SAHA TRADING
+10003622	SAHADEV GHOSH
+10003623	SAHEB MALITYA
+10003624	SAHEBUL SK
+10003625	SAHIDA KHATUN
+10003626	SAIDUL MONDAL
+10003627	SAIFUDDIN SAH
+10003628	SAIKAT BHADURI
+10003629	SAJAN DEVI DAGA
+10003630	SAJIDUL ISLAM
+10003631	SAKAMBARI TRADERS
+10003632	SAKINA ENTERPRISRE
+10003633	SALEHA BAGUM
+10003634	SAMARENDRA DUTTA
+10003635	SAMBHU UDYOG
+10003636	SAMIR KUMAR GHOSH
+10003637	SAMIR SARKAR
+10003638	SAMIUL HAQUE
+10003639	SAMSIKA JUTE SELLER
+10003640	SAMSUL HOQUE MONDAL
+10003641	SAMSUL MOLLICK
+10003642	SAMTA BAID
+10003643	SANATAN ADHIKARI
+10003644	SANATAN SAHA
+10003647	SANDIPON KUNDU
+10003649	SANJAY KUMAR BACHHAWAT
+10003650	SANJAY KUMAR CHHAJER & SONS (HUF)
+10003651	SANJAY SAHA
+10003652	SANJIB RAKSHIT
+10003653	SANJU MEHTA
+10003654	SANKAR LAL AGARWALA
+10003655	SANKIT AGARWALA
+10003656	SANT KUMAR MOHATA
+10003657	SANTA CHAKRABORTY
+10003658	SANTANU DEBNATH
+10003659	SANTANU PANJA
+10003660	SANTANU TRADING COMPANY
+10003661	SANTIPUR T. C. A. M. S. LTD.
+10003662	SANTOSH  BARARIA
+10003663	SANTOSH CHANDRA SARKAR
+10003664	SANTOSH DEVI MAHESWARI
+10003665	SANTOSH DEVI SUKHLECHA
+10003666	SANTOSH KUMAR AGARWALA
+10003667	SANTOSH KUMAR DEY
+10003669	SANTOSH NUHIWAL
+10003670	SANTOSH PAL
+10003671	SANTOSH SETHIA
+10003672	SARIKA SAHA
+10003673	SARKAR TRADERS
+10003674	SARTAJ TRADE INTERNATIONAL
+10003675	SARWAN KUMAR GOENKA
+10003676	SARWAN KUMAR GOENKA (HUF)
+10003677	SASANKA SHEKHAR DEB
+10003678	SATISH CHANDRA SARKAR
+10003679	SATTYAM SHIBAM SUNDARAM
+10003680	SATYA NARAYAN DUTTA
+10003681	SATYA NARAYAN SAHA
+10003682	SATYA NARAYAN TOSHNIWAL
+10003683	SAURAV AGARWALA
+10003684	SAURAV KOTHARI
+10003685	SAWARMAL AGARWALA
+10003686	SAWARMAL BHAGAT
+10003687	SAWARMAL BHAGAT (HUF)
+10003688	SAYANTIKA ENTERPRISES
+10003689	SAYEED AFRIDI
+10003690	SEEM ASUREKA
+10003691	SEKH AKTAR HOSSAIN
+10003692	SEKHAR BHAGAT (HUF)
+10003693	SHAKTI PADA DAS
+10003694	SHAKTI TRADERS
+10003696	SHALINI SOMANI
+10003697	SHAMBHU CHOUDHARY
+10003698	SHANKARLAL SHYAMSUNDAR
+10003699	SHANTANU MAJUMDAR
+10003700	SHANTI DEVI SUKHLECHA
+10003701	SHEFALI KHATUN
+10003702	SHEFALI PAUL
+10003703	SHIBOBROTO BISWAS
+10003704	SHILPI SARKAR
+10003705	SHIV TRADERS
+10003707	SHIVAM SAHA
+10003708	SHRAWAN KUMAR BISHNOI
+10003709	SHRAWAN KUMAR BISHNOI & SONS
+10003710	SHRAWAN KUMAR GUPTA
+10003711	SHRAWAN KUMAR GUPTA & SONS
+10003712	SHREE GANPATI SYNDICATE
+10003713	SHREE GOPAL OIL MILL
+10003715	SHREE JAGANNATH OIL MILL
+10003717	SHREE NARAYAN INDUSTRIES
+10003718	SHREE RADHA TRADERS
+10003720	SHREE SHYAM TRADERS
+10003721	SHREE VANIJAY VIKASH (PVT) LTD.
+10003722	SHRI LAKSHMI TRADERS
+10003723	SHRI SHANTINATH JUTE SUPPLY
+10003724	SHRUTI SOMANI
+10003725	SHUBHAM ENTERPRISE
+10003726	SHUBHAM TRADING
+10003727	SHYAM SUNDAR RATHI
+10003728	SHYAMAL KUMAR SAHA
+10003729	SHYAMAL NANDI
+10003730	SIDHARTH TRADING
+10003731	SIMA BHUTRA
+10003732	SIMA DEVI DARAK
+10003733	SIMA PAUL
+10003734	SINDURMAL JAIN
+10003736	SIRAJUL ISLAM
+10003737	SITESH PAL
+10003738	SIYA JUTE SUPPLY
+10003739	SK. MOKADDAR
+10003740	SK. SALIM EFTEKHAR
+10003741	SK. SANOYAR ALI
+10003742	SMARAJIT SAHA
+10003743	SOFI TRADING COMPANY
+10003744	SOHAN GOENKA SONS(HUF)
+10003745	SOHAN LAL GOENKA
+10003747	SOMA GHOSH
+10003748	SOMA SAHA
+10003749	SOMNATH TRADING
+10003750	SONAM BHAGAT
+10003751	SONJU JUTE SUPPLYERS
+10003752	SONJU MONDAL
+10003754	SOPIUL ISLAM
+10003755	SOURAV SARKAR
+10003756	SOUVAN DUTTA
+10003757	SRI BHUWAL JUTE SUPPLY
+10003758	SRI BIJOY KRISHNA ENTERPRISE
+10003759	SRI BISHNU TRADERS
+10003760	SRI CHAITANYA TRADERS
+10003761	SRI GOPAL ENTERPRISES
+10003762	SRI GOURANGA TRADERS
+10003763	SRI KRISHNA TRADERS
+10003764	SRI LAXMI JUTE SUPPLY
+10003765	SRIPAL CHAND BOTHRA
+10003766	SRISTI ENTERPRISES
+10003767	STIL-UNIT:GONDALPARA MILL
+10003769	STOCK BUSINESS
+10003770	SUBAL CHANDRA DUTTA
+10003771	SUBHAM ENTERPRISE
+10003772	SUBHANKAR GHOSH
+10003773	SUBHASH CHAND JAIN
+10003774	SUBHENDU BHAR
+10003775	SUBHENDU KUNDU
+10003776	SUBHKARAN BIJOY KUMAR
+10003777	SUBHSAGAR MERCANTILES PVT LTD, DON'
+10003778	SUBODH BHADRA
+10003779	SUBODH CHANDRA PAUL
+10003781	SUBRATA SAMAJDER
+10003782	SUCHANDANA SAHA
+10003783	SUCHARITA GHOSH
+10003784	SUDEB PAUL
+10003785	SUDHA JAIN
+10003786	SUDHENDRA NARAYAN CHOWDHURY
+10003787	SUFIA KHATUN
+10003788	SUITY SAHA
+10003789	SUKANTA MANDAL
+10003790	SUKDEB MONDAL
+10003791	SUKHBILAS RAM
+10003792	SUKUMAR CHANDA
+10003793	SUKUMAR GHOSH
+10003794	SUKUMAR PAUL
+10003795	SUKUMAR PRASAD BHAGAT
+10003796	SUKUMAR SAHA
+10003797	SUKUMAR SARKAR
+10003798	SULOCHANA DEVI AGARWALA
+10003799	SUMAN AGARWAL
+10003800	SUMAN DARAK
+10003801	SUMAN ENTERPRISE
+10003802	SUMAN SHA DARAK
+10003803	SUMAN TRADING CO.
+10003804	SUMATI TRADING CO
+10003805	SUMIR SEKH
+10003806	SUMIT AGARWALA
+10003807	SUMIT KUMAR AGARWALA
+10003809	SUNDAR LAL SUKHLECHA
+10003810	SUNDER LAL JAIN (HUF)
+10003811	SUNIL AGARWALA
+10003812	SUNIL JOSHI
+10003813	SUNIL KUMAR AGARWALA HUF
+10003814	SUNITA AGARWALA
+10003815	SUNITA BAJAJ
+10003816	SUNITA JAIN
+10003817	SUPARAS TRADING
+10003819	SUREKA TRADING
+10003820	SURENDRA KUMAR JAIN
+10003821	SURESH CHANDRA PAUL
+10003822	SURESH KUMAR AGARWAL
+10003823	SURESH SINGHANIA
+10003824	SURUCHI NUHIWAL
+10003825	SUSAMA SINGHI
+10003826	SUSANTA CHANDA
+10003827	SUSHANTA BAIDYA
+10003828	SUSHIL KUMAR JAIN (HUF)
+10003829	SUSHIL KUMAR PUGALIA
+10003830	SUSHIL SANTHALIYA
+10003831	SUSHIL SUREKA
+10003832	SUSHIT KUMAR GHOSH
+10003833	SWAPAN KUMAR GHOSH
+10003834	SWAPAN MONDAL
+10003835	SWARNARATNA INVESTMENT P. LTD.
+10003836	SWATI ENTERPRISE
+10003837	SWEETY MURARKA
+10003838	SWETA BHATTACHARJEE
+10003839	TAFAZZAL HOSSAIN
+10003840	TAJMEL HAQUE
+10003841	TANUJ JAIN
+10003842	TANUJ KUMAR JAIN & SONS HUF
+10003843	TAPAN GHOSH
+10003844	TAPAN KUMAR MANDAL
+10003845	TAPAN PRAMANIK
+10003846	TAPAN SAHA
+10003847	TAPAS MAJUMDAR
+10003848	TAPAS MANDAL
+10003849	TAPASH DUTTA
+10003850	TAPASH KUMAR GHOSH
+10003851	TAPASH KUMAR JOGANI
+10003852	TARA DEVI GUPTA
+10003853	TARA MA JUTE SUPPLY
+10003854	TARA PADA PAUL
+10003855	TARAKNATH AGRO PRODUCT
+10003857	TARAMA TRADERS
+10003858	TARAMA TRADING
+10003859	THE INDIA JUTE & INDUSTRIES LTD
+10003860	THE JUTE CORPN OF INDIA LTD.
+10003861	THE ORIENTRAL INSURANCE CO. LTD.
+10003862	THE PROGRESSIVE COMMODITIES CO.
+10003863	TIRUPATI TRADERS
+10003865	TIRUPATI TRADING HUF
+10003867	TOTAN SARKAR
+10003868	TRILOK CHAND JAIN (HUF)
+10003869	TRISHNA MALLICK
+10003870	TULSI RAM AGARWALA
+10003871	TULSI RAM AGARWALA & SONS (HUF)
+10003872	TULSI RAM CHORARIA
+10003873	TUSHI DUTTA
+10003875	UMA SHANKAR AGARWAL
+10003877	UMESH PRASAD GUPTA
+10003878	USHA DEVI KEDIA
+10003879	USHA SHAW
+10003880	UTTAM AGARWAL
+10003881	UTTAM BALA
+10003882	UTTAM KUMAR BHUTRA
+10003883	UTTAM KUMAR JAIN
+10003884	UTTAM KUMAR JAIN AND SONS HUF
+10003885	UTTAM KUMAR SAHA
+10003886	UTTAM NAG
+10003887	V. ANUJ TRADING COMPANY
+10003888	VENKET BHAGAT
+10003889	VIDYA DEVI AGARWALA
+10003890	VIGNESHWARA YARN & FABRICS PVT LTD.
+10003891	VIJAY JUTE SUPPLY
+10003892	VIKASH KUMAR MUNDHRA
+10003893	VIMAL KUMAR CHHAJER
+10003894	VINAYAK JUTE MARKETING PVT. LTD.
+10003895	VINAYAKABASAN PRIVATE LTD.
+10003896	VINEET ENTERPRISES
+10003897	VISHAL BHAGAT
+10003898	VISHAL DEEP AGARWALA
+10003899	VISHAL SARAOGI
+10003900	VIVEK AGARWALA
+10003901	VIVEK BHAGAT
+10003902	VIVEK BHAGAT (HUF)
+10003903	VIVEK KEDIA
+10003904	VIVEK KUMAR
+10003905	VIVIDH COMMERCIAL P.LTD.
+10003906	WASIM MONDOL
+10003907	YASH SANCHETI
+10003908	YNUS SHAIKH
+10003909	YOGESH KUMAR BAJAJ HUF
+10003910	YOJNA TAPARIA
+10003911	YOUNUS ALI
+10003912	YUNUS ALI
+10003913	ZAHIDUL MONDAL
+10003914	ZAYAN TRADELINK PVT.LTD.
+10003916	ATANU  JANA
+10003917	BIJAY SINGH BAID
+10003925	NAVARATAN DUGAR
+10003933	A K ENTERPRISE
+10003934	A V JUTE & GUNNY DEALERS (P) LTD.
+10003936	A. PUGALIA & CO.
+10003937	A. M. MAIR & CO. PVT. LTD.
+10003938	A.V.SALES CORPORATION
+10003939	AADARSH FIBRE SALES
+10003940	AAYUSH VISHESH
+10003941	ABHANI ENTERPRISE
+10003942	ABHAY KUMAR JAIN
+10003943	ABHINANDAN & CO.
+10003944	ABHISHEK & COMPANY
+10003945	ABHISHEK SALES
+10003946	ABINASH MORE HUF
+10003947	ADINATH FIN TRADE PVT LTD
+10003948	ADINATH TRADING COMPANY
+10003949	ADITYA AGARWAL
+10003950	ADITYA SADANI
+10003951	AJANTA VINIMAY PVT. LTD.
+10003952	AJAY TRADERS
+10003953	AKANSHA COMMERCIAL PRIVATE LIMITED
+10003954	AKSHAY COMMERCIAL CO.
+10003955	ALAM FIBRES
+10003956	ALOKE KUMAR SAMANTA
+10003957	AMAL AGARWALA
+10003958	AMAL DUTTA
+10003959	AMAL KRISHNA SAHA
+10003960	AMAN JUTE SUPPLY
+10003961	AMBEY JUTE SUPPLY
+10003962	AMBICA JUTE SUPPLY AGENCY
+10003963	AMBIKA TRADING
+10003964	AMIT JAIN (HUF)
+10003965	AMIT ENTERPRISE
+10003966	AMIT KUMAR DAN
+10003967	AMIT KUMAR RATHI (HUF)
+10003968	ANADA MANGAL VANIJYA P.LTD.
+10003969	ANAMITRA DAN
+10003970	ANAND KUMAR BOHRA
+10003971	ANANDA BIKASH SAHA
+10003972	ANANDA MANGAL VANIJYA P.LTD.
+10003973	ANANT JUTE UDYOG
+10003974	ANEESH KUMAR RAKHECHA
+10003975	ANGLE ADVISORY SERVICES PVT. LTD.
+10003976	ANIL KUMAR DAN
+10003977	ANIL KUMAR PRAMANIK
+10003978	ANISH TRADING COMPANY
+10003979	ANJANA SAHA
+10003980	ANJANI TRADING CO.
+10003981	ANKIT ENTERPRISE
+10003982	ANKUS SUPPLIERS PVT. LTD.
+10003983	ARADHYA DEAL TRADE PVT. LTD.
+10003984	ARCHANA SAHA
+10003985	ARIHANT FASHIONS
+10003986	ARIHANT JUTE TRADERS
+10003987	ARIHANT TRADING COMPANY
+10003988	ARIJIT CHOWDHURY
+10003989	ASHOK KUMAR AGARWAL
+10003990	ASHOK KUMAR BENGANI
+10003991	ASHOK KUMAR JAIN
+10003992	ASHOKE KUMAR KUNDU
+10003993	ASHOKE TRADING CO.
+10003995	AYUSH JUTE SUPPLY
+10003996	B.L.MAHESWARI
+10003997	B.R.BAID & COMPANY
+10003998	BABA ENTERPRISE
+10003999	BABULAL BHAGHIRATH
+10004000	BAID FINCOM PVT.LTD.
+10004001	BAJRANG LAL HIRAWAT
+10004002	BAJRANG LAL RATHI
+10004003	BAJRANGLAL AMIT KUMAR (HUF)
+10004004	BAKSHIRAM JAIPRAKASH
+10004005	BALAJEE JUTE UDYOG
+10004006	BALAJEE TRADERS
+10004007	BALAJEE TRADERS..
+10004008	BALAJI JUTE TRADING COMPANY
+10004009	BALARAM SAHA
+10004010	BANCHARI AGARWALA
+10004011	BANKE BEHARI AGENCIES
+10004012	BANSHILALL NATHMAL
+10004013	BASANT TRADING CO.
+10004014	BASANTA KUMAR JAIN
+10004015	BASUKI JUTE SUPPLY
+10004016	BEGRAJ BHAGIRATH
+10004017	BENGAL AGREEN
+10004018	BHAGWATI CLOTH AGENCY PVT LTD
+10004019	BHANDARI BROTHERS
+10004020	BHANWARLAL GULABCHAND
+10004021	BHATTACHARYA & CO,
+10004022	BHAWARLALL TIKAMCHAND
+10004023	BHAWNA VINIMAY PVT. LTD.
+10004024	BHOJRAJ BAID & SONS(HUF)
+10004025	BIJAY KUMAR AGARWAL
+10004026	BIKASH KUMAR SARKAR
+10004027	BIMAL SINGH HIRAWAT
+10004028	BIMAN CHANDRA SAHA
+10004030	BIO JUTEX PRIVATE LTD.
+10004031	BISHNU KUMAR BAJAJ
+10004032	BOTHRA JUTE UDYOG
+10004033	BRAHMARATAN BALKISHAN
+10004034	BRAJANAND ISPAT UDYOG PVT.LTD.
+10004035	C.JHAWAR & CO.
+10004036	C.S.ENTERPRISES
+10004037	CAIRO NIRYAT PRIVATE LIMITED
+10004038	CHAMPALALL SUBHKARAN
+10004039	CHANCHAL JAIN
+10004040	CHANDRA KUMAR SETHI-HUF
+10004041	CHATTAR RAJ BAIJNATH
+10004042	CHINMOY MALAKAR
+10004043	CHIRAG BOTHRA
+10004044	CHOPRA CORPORATION
+10004045	CHORARIA ENTERPRISES
+10004046	CHUNNILAL LAXMI NARAYAN
+10004047	COMMAND NETWORK PVT LTD
+10004048	CORUS COMMERCIAL PVT.LTD.
+10004049	COSSIMBAZAR JUTE ENTERPRISE
+10004050	D.K. JUTE SUPPLY
+10004051	DAKALIA BROTHERS (P) LTD.
+10004052	DALCHAND MANAKCHAND
+10004053	DALSUKHROY SOBHACHAND
+10004054	DAULAT RAJ SANDEEP KUMAR
+10004055	DAW & SONS
+10004056	DAY MALL DUGAR
+10004057	DAYAL BANIK
+10004058	DEBOKI NANDAN AGARWAL
+10004059	DEEPAK KUMAR KARNANI
+10004060	DEEPCHAND BANOT
+10004061	DELTA LIMITED
+10004062	DEVI MAA JUTE SUPPLY
+10004063	DHAN DHARI ENTERPRISE
+10004064	DILIP KUMAR & CO.
+10004065	DILIP KUMAR AGARWALA
+10004066	DINESH TOSHNIWAL (HUF)
+10004067	DINESH KUMAR BAID
+10004068	DINESH KUMAR RATHI
+10004069	DIPAK AGARWALA (HUF)
+10004070	DIPANWITA BISWAS
+10004071	DIPTI GHOSH
+10004072	DIVIJ FINANCE PVT. LTD.
+10004073	DUDHANI TRADING CO
+10004074	DUGAR & CO
+10004075	DULAL JUTE CO.
+10004076	DULICHAND AGARWALA
+10004077	DULICHAND KUNDANMAL
+10004078	DWARKA PRASAD SHARMA
+10004079	ESKAY ENCLAVE PVT.LTD.
+10004080	ETI RANI PODDER
+10004081	EVERNEW COMMODEAL PVT. LTD.
+10004082	EXIM SCRIPS DEALERS PVT.LTD.
+10004083	G. R. ENTERPRISE
+10004084	G.GOLCHHA & SONS
+10004085	G.KOTHARI & CO.
+10004086	G.MUNDHRA & SONS
+10004087	GALLANT FINANCE & INVESTMENT LTD.
+10004088	GANESHVANI TRADELINK PVT. LTD.
+10004089	GANGES JUTE SUPPLY
+10004090	GANPAT RAI BAID & SONS HUF
+10004091	GARG BROTHERS PVT. LTD.
+10004092	GARIMA ENTERPRISES
+10004093	GAWARJA TRADING CO.
+10004094	GHOSH ENTERPRISE
+10004095	GIRDHARILAL & SONS
+10004096	GIRDHARILAL KRISHNAGOPAL
+10004097	GIRDHARILAL RAJESH KUMAR
+10004098	GOBIND RAM SUSHIL KUMAR
+10004099	GOKUL COMMOTRADE PVT. LTD.
+10004100	GOLCHHA BROTHERS
+10004101	GOLCHHA UDYOG
+10004102	GOLDEN FIBRES
+10004103	GOPAL AGARWAL
+10004104	GORDHAN DAS GOLCHHA
+10004105	GOURI JUTE SUPPLY
+10004106	GOUTAM JAIN
+10004107	GOUTAM KUNDU
+10004108	GULAB CHAND DUDHANI & SONS
+10004109	GYAN PRAKASH BAID
+10004110	H. K. AGENCIES
+10004111	H. R. VINIMAY PVT. LTD.
+10004112	HANUMAN JUTE TRADING CO
+10004113	HANUMAN MALL PRAMOD KUMAR (HUF)
+10004114	HARAKHCHAND SARAOGI & CO. (P) LTD.
+10004115	HARASIT GHOSH
+10004116	HARDSOFT FIBRES PVT. LTD.
+10004117	HARIHAR TRADES PVT.LTD.
+10004118	HARIRAM SURENDRAKUMAR
+10004119	HARISH KUMAR GOEL (HUF)
+10004120	HARSH VARDHAN MALL (HUF)
+10004121	HARYANA JUTE PRODUCTS
+10004122	HASTMULL KISTURCHAND
+10004123	HINDUSTHAN RICE MILLS
+10004124	HIRALAL BAID
+10004125	HIRAWAT JUTE SUPPLY
+10004126	HONEYWELL COMMERCIAL PVT.LTD.
+10004127	HULASH CHAND BOTHRA AND SONS (HUF)
+10004128	IFFCO TOKIO GENERAL INSURANCE COMPA
+10004129	INDRA JUTE SUPPLY
+10004130	INDUSTRIAL PRINTERS
+10004131	J. KUTHARI
+10004132	J.I.S.ENTERPRISE
+10004133	J.M.(TRADERS & INVESTORS) (P) LTD.
+10004134	J.M.BAFNA & CO.
+10004135	JAGADHATRI BHANDER PVT. LTD.
+10004136	JAGANNATH NANDKUMAR
+10004137	JAGDISH PRASAD SONI
+10004138	JAGDISH TRADING CO.
+10004139	JAI BALAJI TRADING
+10004140	JAI DURGA JUTE SUPPLY
+10004141	JAI PRAKASH BHUTORIA
+10004142	JAI SHREE SHYAM TRADERS
+10004143	JAIKISHANDASS MALL JUTE PRODUCTS(P)
+10004144	JAIN JUTE COMPANY
+10004145	JAY JUTE SUPPLY
+10004146	JAYRAM AGARWAL
+10004147	JAYTEE COMMERCIAL COMPANY PVT. LTD.
+10004148	JEEVAN JUTE SUPPLY
+10004149	JEWEL ENTERPRISES
+10004150	JEWEL JUTE LTD.
+10004151	JHANWAR ENTERPRISES
+10004152	JHOOM JHOOM GHOSH
+10004153	JHUNJHUNWALA TRADING CO.
+10004154	JIWRAJ PUGALIA & COMPANY
+10004155	JUTE CORPORATION OF INDIA
+10004156	JUTE FIBRE
+10004157	JYOTI KUTHARI (H.U.F.)
+10004158	JYOTI TRADING CO.
+10004159	KABITA GHOSH
+10004160	KAJAL AGENCIES PRIVATE LTD.
+10004161	KALIMATA TRADERS
+10004162	KAMALA TRADING CO
+10004163	KAMARHATTY CO.LTD.
+10004164	KAMARUJJAMAN GAIN
+10004165	KAMLA TRADERS
+10004166	KANMAL MEHTA HUF
+10004167	KANT & COMPANY LIMITED
+10004168	KAPIL SARDA
+10004169	KARNI FIBRE
+10004170	KARTAVYA SALES PVT. LTD
+10004171	KASA CONTRADE PRIVATE LTD.
+10004172	KEDAR NATH JHANWAR
+10004173	KEDBANDHU INVESTMENTS PVT.LTD.
+10004174	KEDIA AGENCIES
+10004175	KEDIA COMMERCIAL PVT.LTD.
+10004176	KESAR MALL SUNDAR KUMAR
+10004177	KESHAR MALL SUNDAR KUMAR
+10004178	KESHARMAL JAIN
+10004179	KHAWAJA TRADERS
+10004180	KHEMKA FIBRES
+10004181	KHETARAM MOHATA
+10004182	KISHAN SONI
+10004183	KISHOR SAHA
+10004184	KONICA TRADERS PVT LTD
+10004185	KORBAN HOSSION GAIN
+10004186	KRIS TRADING CO.PVT.LTD.
+10004187	KRISHI TRADEX PRIVATE LIMITED
+10004188	KRISHNA TRADING
+10004189	KRISHNA JUTE CO.
+10004190	KRISHNA MOHATA
+10004191	KUMKUM GHOSH
+10004192	KUSHAL CORPORATION
+10004193	KUTHARI & CO.
+10004194	LADHA OVERSEAS PVT. LTD.
+10004195	LADHURAM MAHESHKUMAR
+10004196	LAKSHMI NARAYAN SADANI
+10004197	LALIT KUMAR BAHETI & SONS
+10004198	LALIT KUMAR TOSHNIWAL (HUF)
+10004199	LEKHCHAND & CO.
+10004200	LOYAL MERCHANT PVT. LTD.
+10004201	M.K. ENTERPRISES
+10004202	M.M.ENTERPRISES
+10004203	M.P.FASHION
+10004204	M.P.TRADING CO
+10004205	MADANLAL RANKA
+10004206	MADHAV JUTE CO
+10004207	MADHUMITA SURANA
+10004208	MADHUR ESTATES & AGENCIES PRIVATE L
+10004209	MADHUSUDHAN PODDER
+10004210	MAGNUM COMMERCIAL LIMITED
+10004211	MAHABIR JUTE CO
+10004212	MAHABIR PRASAD SARAOGI (HUF)
+10004213	MAHAK TRADE LINK PVT. LTD.
+10004214	MAHAVIR JUTE SUPPLY
+10004215	MAHENDRA KUMAR JAIN (HUF)
+10004216	MAJESTIC COMMERCIAL PVT. LTD.
+10004217	MALL REAL ESTATES (P) LTD.
+10004218	MALOO BROTHERS
+10004219	MANAK CHAND BAID
+10004220	MANGALCHAND VIJAYKUMAR
+10004221	MANGILAL BENGANI
+10004222	MANGTU RAM SUREKA (HUF)
+10004223	MANOJ KUMAR RATHI
+10004224	MANOJKUMAR VINEETKUMAR
+10004225	MARUTI ROADWAYS
+10004226	MD. BADRUDDOZA
+10004227	MD.ABUL KASHEM
+10004228	MEGHRAJ RAJKUMAR NAHATA
+10004229	MIDNAPORE COMMERCIAL CO.
+10004230	MMB & SONS
+10004231	MOTILAL SHYAM SUNDER
+10004232	MOTILALL JEET MALL
+10004233	MREL (UNIT- HASTINGS JUTE MILL)
+10004234	MREL (UNIT; GONDALPARA JUTE MILL)
+10004235	MUDIT ENTERPRISES
+10004237	MUKUND INVESTMENTS PVT. LTD
+10004238	MURALI MANOHAR MALL
+10004239	MURSHIDABAD GOLDEN FIBRE
+10004240	N. C. ENTERPRISES
+10004241	N. R. TRADING CO.
+10004242	N. SOMANI & SONS
+10004243	N.SETHIA & CO.
+10004244	NABIN KUMAR JAIN & SONS (HUF)
+10004245	NAHATA BROTHERS
+10004246	NAND KISHORE RATHI (HUF)
+10004247	NAND KUMAR & CO.
+10004248	NAND LAL SANJAY KUMAR & SONS
+10004249	NANDLAL SAKET KUMAR
+10004250	NARAYAN SARDA
+10004251	NARAYAN ENTERPRISE
+10004252	NARENDRA KUMAR TAPARIA (HUF)
+10004253	NARESH KUMAR THARD
+10004254	NATORE JUTE MILL
+10004255	NATURA YARNS PVT. LTD.
+10004256	NEMAI CHANDRA BISWAS
+10004257	NILAM BHAUMIK
+10004258	NILIMA ENTERPRISES (P) LTD.
+10004259	NIRMAL KUMAR BENGANI
+10004260	NIRMAL KUMAR PODDAR
+10004261	NIRMALENDU SARKAR
+10004262	NISHANT ENTERPRISES
+10004263	NKS COMMERCIALS PVT. LTD.
+10004264	NOKHA JUTE UDYOG PVT.LTD.
+10004265	NORATAN MAL JAIN
+10004266	OM PRAKASH BAHETI
+10004267	OM PRAKASH AGARWALA
+10004268	OM TRADING CO.
+10004269	OMPRAKASH SONI (HUF)
+10004270	ONKAR ENTERPRISES
+10004271	OSATWAL INVESTMENTS PVT. LTD.
+10004272	OSATWAL JUTE & GUNNY SALES PVT. LTD
+10004273	P. JAIN (HUF)
+10004274	P.R.ENTERPRISE
+10004275	PADAM CHAND JAIN
+10004276	PAL & CHOUDHURY CO.
+10004277	PANNALAL JAIN (HUF)
+10004278	PANNECHAND TOLARAM
+10004279	PARAMESWARLAL MAHESWARI
+10004280	PARES JAIN
+10004281	PAWAN JAIN
+10004282	PHUSH RAJ JAIN
+10004283	PMC ALLOYS PRIVATE LIMITED
+10004284	POPULAR TRADERS
+10004285	PRABHAT TRADING
+10004286	PRABHAY INVESTMENTS PVT. LTD.
+10004287	PRABHUDAYAL SHARMA & SONS HUF
+10004288	PRADEEP KUMAR TAPARIA (HUF)
+10004289	PRADIP KUMAR DUGAR (HUF)
+10004290	PRAHLADRAI KANAILAL (HUF)
+10004291	PRAKASH NAHAR
+10004292	PRAKASH PURIA
+10004293	PRAMATHA GHOSH
+10004294	PRATAP BANERJEE
+10004295	PRATAP SINGH RAKHECHA
+10004296	PRATEEK CORPORATION
+10004297	PRATIK KUMAR PODDAR
+10004298	PRAVIN JAIN
+10004299	PROTIMA SAHA
+10004300	PTF
+10004301	PUGALIA TRADING CO.
+10004302	PULAK SINGHA
+10004303	PUNIT CHORARIA
+10004304	PUNRASAR JUTE SUPPLY
+10004305	PUSHRAJ PURANMULL
+10004306	QUALITY VINIMAY (P) LTD
+10004307	R. K. DAKALIA & SONS H.U.F.
+10004308	R. K. TRADERS
+10004309	R. M. ENTERPRISES
+10004310	R.D.ENTERPRISES
+10004311	R.K. JUTE SUPPLY
+10004312	R.K. SONI & SONS
+10004313	R.S.ENTERPRISE
+10004314	R.T. TRADERS
+10004315	RABEYA JUTE MILLS
+10004316	RABINDRANATH SADHUKHAN
+10004317	RADHA KALI BHANDER
+10004318	RADHAKISAN OMPRAKASH SONI (HUF)
+10004319	RAJ KUMAR PODDAR HUF
+10004320	RAJ AGENCY
+10004321	RAJ KUMAR CHINDALIA
+10004322	RAJ KUMAR DUTTA
+10004323	RAJ KUMAR PODDAR
+10004324	RAJ KUMAR SETHIA
+10004325	RAJSHREE ENTERPRISES
+10004326	RAKHECHA ENTERPRISE
+10004327	RAKHECHA HOLDINGS PVT LTD
+10004328	RAKHECHA TRADING CO.
+10004329	RAMESHWAR JUTE SUPPLY
+10004330	RAMESHWAR PROPERTIES PRIVATE LIMITE
+10004331	RAMESHWARLAL NANDLAL RATHI (HUF)
+10004332	RANCHHOR DAS SARDA (HUF)
+10004333	RASHMI FIBRES (P) LTD.
+10004334	RATANLAL PARAKH (HUF)
+10004335	RAVI KUMAR TAPARIA (HUF)
+10004336	RAVINDRA TRADING CO.
+10004337	REGO CHEMICALS PVT. LTD.
+10004338	REKHA DUGAR
+10004339	RENU AGARWAL
+10004340	RIDHI SIDHI SALES AGENCIES PVT. LTD
+10004341	RINKU MONDAL
+10004342	RISHAB EXPORTS LIMITED
+10004343	RISHABH UDYOG
+10004344	RIVA ENTERPRISE
+10004345	ROHIT SURANA (HUF)
+10004346	ROHIT TRADERS
+10004347	ROZELLE SALES & SERVICES PVT.LTD.
+10004348	RUCHIKA VINIMAY PVT. LTD.
+10004349	RUPCHAND NORATMAL CHORARIA HUF
+10004350	S. A. JUTE SUPPLY
+10004351	S. K. ENTERPRISE
+10004352	S. R. FABRICS
+10004353	S.B.LASER & COMPUGRAPHICS PVT.LTD.
+10004354	S.C.MOITRA & CO.
+10004355	S.D. TRADING CO
+10004356	S.GOLDEN TRADE INTERNATIONAL
+10004357	S.K. JAIN (HUF)
+10004358	S.R.ENTERPRISES
+10004359	S.S. KAYAL & SONS
+10004360	SADANI FINANCE CORPORATION
+10004361	SAGARMAL HARIPRASAD
+10004362	SAGARMAL SURESHKUMAR
+10004363	SAJAL KUMAR AGARWALA & SONS (HUF)
+10004364	SAJAN KUMAR JHUNJHUNWALA (HUF)
+10004365	SAJJAN AGARWALA
+10004366	SAMPAT LAL JAIN HUF
+10004367	SANDEEP BIHANI
+10004368	SANDEEP ENTERPRISE
+10004369	SANDEEP KUMAR BOHRA HUF
+10004370	SANDYA ENTERPRISES
+10004371	SANHIT MARKETING PVT. LTD.
+10004372	SANJAY & CO.
+10004373	SANJAY KUMAR BHARUNT HUF
+10004374	SANJAY KUMAR DAGA
+10004375	SANJAY KUMAR JAIN
+10004376	SANJAY KUMAR PODDAR
+10004377	SANJOY BISWAS
+10004378	SANSUN ENTERPRISE
+10004379	SANTIPUR TH. CO-OP AGRIL MKTG. SOCY
+10004380	SANWAR TRADING INVESTMENT PVT.LTD.,
+10004381	SARASWATI CONSTRUCTION CO. PVT. LTD
+10004382	SARGAM AGENCIES PVT.LTD.
+10004383	SARLA DEVI SADANI
+10004384	SARODA TRADING
+10004385	SATYANARAYAN CHETLANGIA & BROS.
+10004386	SATYANARAYAN TOSHNIWAL & SONS (HUF)
+10004387	SDDRM COMMERCIAL PVT LTD
+10004388	SHAMBHU NATH CHOWDHURY (HUF)
+10004389	SHANKAR LAL SHYAM SUNDER
+10004390	SHANTANU PANJA
+10004391	SHANTI DEVI JAIN
+10004392	SHARMA TRADERS
+10004394	SHIVMANGAL MERCHANDISE PVT LTD
+10004395	SHIVOM SHELTER PVT.LTD.
+10004396	SHJ TRADERS PVT. LTD.
+10004397	SHOVA JAIN
+10004398	SHREE TRADERS
+10004399	SHREE BHAGIRATH COMMERCIAL CO.
+10004400	SHREE BRIJDHAM TRADERS
+10004401	SHREE CHAND JAIN
+10004402	SHREE GANPATI ENTERPRISE
+10004403	SHREE GANPATI FIBRE
+10004404	SHREE NANDAN KANAN AGRO PRODUCT PVT
+10004405	SHREE SHYAM JUTE SUPPLY
+10004406	SHREE VISHNU TRADING COMPANY
+10004407	SHREEKRISHAN SAGARMALL
+10004408	SHRI BALAJI ENTERPRISES
+10004409	SHRI SHYAM ENTERPRISES
+10004410	SHRIRATAN SADANI
+10004411	SHUBHSHREE TRADERS PVT.LTD.
+10004412	SHYAM SUNDER GOYAL & SONS (HUF)
+10004413	SHYAMAL KUMAR DAS
+10004414	SHYAMSUNDAR RAMESHKUMAR
+10004415	SHYAMSUNDAR TRADING CO.
+10004416	SIDDHIVINAYAK ENTERPRISE
+10004417	SIDHIDATA TRADECOMM LIMITED
+10004418	SIKDER BROTHERS
+10004419	SIKHWAL TRADERS
+10004420	SILVASSA SYNTEX PVT.LTD.
+10004421	SILVERLAKE MERCHANTS PVT.LTD.
+10004422	SIMANT JUTE SUPPLY
+10004423	SIPRA GHOSH
+10004424	SITARAM AGARWALA
+10004425	SMITABH INTERCON LIMITED
+10004426	SMRITI VINIMAY (P) LIMITED
+10004427	SNOWLINE VANIJYA PRIVATE LIMITED
+10004428	SOHANLALL CHANDANMULL & CO.
+10004429	SOHANLALL HANSRAJ
+10004430	SOHANLALL JHANWAR & SONS
+10004431	SOLTY AGENCIES PVT. LTD.
+10004432	SONI JUTE TRADING CO
+10004433	SOURENDRA NATH DAS
+10004434	SRB TRADECOM PVT.LTD.
+10004435	SREE LUXMI TRADERS
+10004436	SREE NIDHI HOLDINGS
+10004437	SREE RAGHUNATH TRADING CO
+10004438	SRI GOPAL COMPANY
+10004439	SRIJAN SUPPLIERS PRIVATE LIMITED
+10004440	STAR ENTERPRISE
+10004441	STIL-UNIT: GONDALPARA MILL
+10004442	STIL-UNIT: HASTINGS MILL
+10004443	STORES
+10004444	SUBHASH CHANDRA SAHA
+10004445	SUBHENDU DE
+10004446	SUBHKARAN DAGA (HUF)
+10004447	SUBHSAGAR MERCANTILES PVT. LTD.
+10004448	SUBODH KUMAR DAN
+10004449	SUBRATA GHOSH
+10004450	SUKHDEO CHANDPRAKASH
+10004451	SUMAN JUTE SUPPLY
+10004452	SUNANDA SAHA
+10004453	SUNDAR KUMAR JAIN & SONS (HUF)
+10004454	SUNFLAG JUTE TRADING PVT LTD
+10004455	SUNIL ENTERPRISES
+10004456	SUNRISE TRADING CO.
+10004457	SUPALI JUTE TRADERS
+10004458	SURBHI TRADE LINK
+10004459	SURENDRA KUMAR PUGALIA
+10004460	SURESH KUMAR KOTECHA & SONS HUF
+10004461	SWARAJ PAL JAIN
+10004462	SWARNARATNA INVESTMENT PVT.LTD.
+10004463	SWASTIK ENTERPRISES
+10004464	SWASTIK TRADERS
+10004465	TAPAN CHAKRABORTY
+10004466	TARABARI TRADERS
+10004467	TARABARI FIBRES
+10004468	TARKESHWAR ENTERPRISES
+10004470	THE ELIXIR
+10004471	THE HOOGHLY MILLS COMPANY LTD.
+10004472	THE JUTE CORPORATION OF INDIA LTD.
+10004473	THE ORIENTAL INSURANCE CO
+10004474	THE ORIENTAL INSURANCE CO. LTD.
+10004475	TIRUPATI JUTE SUPPLY AGENCY
+10004476	TOLARAM (INDIA) LTD.
+10004477	TOLARAM SARDA
+10004478	TOSHNIWAL PLYWOOD (P) LTD.
+10004479	TOSHNIWAL SONS PVT.LTD.
+10004480	TRILOK UDYOG
+10004481	TRISTAR TIE UP PRIVATE LIMITED
+10004482	TULSHI SAHA
+10004483	TULSI TRADERS
+10004484	TWISTER TRADELINK PVT. LTD.
+10004485	UJJAL CHOWDHURY
+10004486	UJJAWAL COMMERCIAL PRIVATE LIMITED
+10004487	UJJWAL TRADING PVT. LTD.
+10004488	UMARANI KRISHI BHANDAR
+10004489	UMED SINGH CHORARIA
+10004490	UTTAM CHAND DAGA
+10004491	UTTAM KUMAR PODDER
+10004492	UTTARA PAT SANGSTHA
+10004493	UTTARA PAT SANGSTHAN
+10004494	VASUNDHARA JUTCOM PVT. LTD.
+10004495	VASUNDHARA TEXCOM PVT LTD
+10004496	VATVEY VYAPAAR PVT. LTD.
+10004497	VIBHA TRADING CO
+10004498	VIGHNESHWAR JUTE SUPPLY
+10004499	VIJAY AJAY JUTE PVT.LTD.
+10004500	VIKASH AGARWAL
+10004501	VIKASH KUMAR LOHIA
+10004502	VIKASH ENTERPRISE
+10004503	VIKRAM AGARWAL
+10004504	VINIDHAN ENTERPRISE
+10004505	VISHAL JAIN
+10004506	VISHNU AGENCY
+10004507	VISHNU ENTERPRISES
+10004508	VISHNUPRIYA TREXIM PVT LTD
+10004509	VISHWANATH NEWATIA
+10004510	VIVIDH COMMERCIAL PVT. LTD.
+10004511	YASH DEALCOM PVT. LTD.
+10004512	YASH PAL JAIN
+10004513	YASH VARDHAN MALL (HUF)
+10004514	ZOBEL SALES PROMOTION (P) LTD.
+10004522	SHAKTIGARH TEXTILE & IND LTD (GM)
+10004632	PRATISTHA ENTERPRISES
+10004633	SANVI TRADING CO
+10004635	MALAY MANDAL
+10004636	AMIT SHARMA
+10004637	BINOD KUMAR KARNANI
+10004638	JAJU & COMPANY
+10004644	BALAJE ENTERPRISE
+10004645	A.S.FIBRES
+10004646	INTAJUL HOQUE MONDAL
+10004647	AAYAZ TRADERS
+10004657	ANUSUYA  AGARWALA
+10004663	MINA DEVI
+10004682	MD. MUSTAKIN ALI
+10004688	SADHANA MANDAL
+10004694	MANOJ KUMAR BAJAJ
+10004695	NARAYAN AGARWAL
+10004697	RABIUL ISLAM KHAN
+10004701	SHEFALI PAL
+10004702	LAXMI TRADERS
+10004716	ESARUL ISLAM
+10004717	ARIF AHAMED
+10004719	OM ENTERPRISE
+10004721	CHIRANJIT SAHA
+10004722	NISHITH MONDAL
+10004723	JMT GROUP
+10004727	BIJOY KRISHNA BODHAK
+10004730	SIBA JUTE TRADERS
+10004732	DULAL GHOSH
+10004733	ROY TRADERS
+10004736	VIVEK KEDIA AND SONS
+10004754	BANKIM CHANDRA
+10004755	DULAL GHOSH
+10004758	BANKIM CHANDRA
+10004764	ADITYA KOTHARI
+10004769	BIRA TRADING COMPANY
+10004771	TUTUL JUTE STOCK BROKER
+10004772	SOURAV MONDAL
+10004773	MD. SAIFUDDIN
+10004782	SELIM MONDAL
+10004783	MALAY GHOSH
+10004784	ANIRUDRA MAITI
+10004785	SUSHANTA KUMAR DAS
+10004789	JAKIR HOSSIAN SIKDER
+10004790	NAYANAVO JUTE SUPPLY
+10004792	DIPANKAR MAJUMDAR
+10004793	SHEMUL KUMAR DAS
+10004798	EAKRAMUL MIYA
+10004799	RABINDRA NATH SAHA
+10004800	JOY SHANKAR MAZUMDAR
+10004801	MARIOM ENTERPRISE
+10004802	PRATICK JAIN
+10004803	SALAUDDIN BISWAS
+10004804	NURUL HASAN
+10004805	MD. AFRING SK
+10004806	MS KHADIJA ENTERPRISE
+10004807	RAFIKUL ISLAM
+10004808	RANI SATI TRADERS
+10004809	BASUDEB GHOSH
+10004810	AAKANSHA JAIN
+10004811	GANESH KUMAR GOENKA (HUF)
+10004812	ABUL HASAN
+10004813	KAUSHALYA DEBI BHAGAT
+10004814	PARMESHWAR LAL AGARWALA
+10004815	NAGRAJMALL ISARCHAND
+10004816	PRANAMAY ENTERPRISE
+10004817	RAJNI MAHESWARI
+10004818	NIMAI SARKAR
+10004819	SHUBHAM JUTE TRADING
+10004820	AHMMAD ENTERPRISE
+10004823	MASUDA KHATUN
+10004828	MD.MOFIJUR RAHAMAN (JUTE BALERS)
+10004832	SANDIP KUMAR JHAWAR
+10004833	MJ COMMERCIAL
+10004834	MANTU MANDAL
+10004835	MATADIN MURARKA(HUF)
+10004836	WAHEDA BANU
+10004837	M/S. REJAUL TATA ENTERPRISES
+10004844	DAMODAR PRASAD BAJAJ
+10004851	MAA MANASHA TRADERS
+10004854	G. S. ENTERPRISES
+10004856	MADHUSUDAN TRADING CO.
+10004857	DEBNATH MONDAL
+10004858	M/S SAH TRADING
+10004859	SHREE GANESH UDYOG
+10004860	M/S. MAA TRADING
+10004861	ARUN BALO
+10004862	MALLICK TRADING
+10004863	F. HABIB JUTE SUPPLY
+10004867	DEBASISH SAHA
+10004868	FAJILA KHATUN
+10004871	K.D. TRADERS
+10004884	ANAND  KUMAR  BOTHRA
+10004885	SANVEEN FIBRES PVT LTD
+10004887	MOSTAFIJUR RAHAMAN
+10004889	SUJIT KUMAR MAJUMDAR
+10004890	ANUJ AGARWALA AND SONS HUF
+10004891	RAJESH KR. GOENKA HUF
+10004895	DILIP BISWAS
+10004899	MAHABIR ENTERPRISES
+10004900	ARIHANT TRADING CO.
+10004909	ATOWAR RAHMAN
+10004910	MD. NOJROUL ISLAM
+10004917	JAHAN UDDIN
+10004919	SNT IDEAL ENTERPRISE
+10004921	MOUMITA DEY DUTTA
+10004923	SATYANARAYAN JUTE SUPPLIERS
+10004938	AMBEY JUTE TRADERS
+10004942	SHAKTIGARH TEXTILE AND INDUSTRIES L
+10004943	ARHAM JUTE TRADERS
+10004944	BALAJI JUTE TRADERS
+10004945	PRIYESH BIHANI
+10004946	KAVITA DEVI BIHANI
+10004950	MUNDHRA & SONS
+10004953	NITYA GOPAL BISWAS
+10004954	TUHIN UDDIN MONDAL
+10004955	TAJMEL HAQUE
+10004956	KIRAN BISWAS
+10004957	DWARKA PRASAD KRISHAN KUMAR
+10004974	PAYEL MONDAL
+10004975	MOHSAHABUL MOLLA
+10004980	LAXMI JUTE TRADERS
+10004981	BABA BASUKINATH TRADING
+10004982	RASIDUL ISLAM MANDAL
+10004983	MATRI TRADERS
+10004984	AWA JUTE TRADING COMPANY
+10004988	SATYANARAYAN SAHA & SONS(HUF)
+10004989	SHUVAM RAM
+10004993	RAJKUMAR CHOWDHURY
+10004995	S.G. TRADE
+10005002	M/S IQUEBAL HOSSAIN
+10005011	M/S. BRINDABAN DE
+10005013	MAHAMAYA JUTE INDUSTRIES PVT. LTD.
+10005015	ROSHNI TRADERS
+10005017	BAM DEV TRADING CO.
+10005018	M/S DULAL CHANDRA SAHA
+10005043	USHA JAIN
+10005044	NANCY ENTERPRISE
+10005050	JOY KUMAR JAIN (HUF)
+10005051	MONDAL JUTE SUPPLIERS
+10005057	TANMAY DEBNATH
+10005062	CONQUEST COMMERCIAL CO PVT. LTD
+10005063	KOYEL DEY
+10005064	MOUMITA MALLIK
+10005067	SUDARSHAN ENTERPRISE
+10005068	MAFIKUL ISLAM
+10005069	TRISHA TRADING CO.
+10005070	SURUTI SOMANI
+10005077	HAZRAT MONDAL
+10005078	RUKMANI INTERNATIONAL PVT LTD
+10005084	MD.TAMSER ALI
+10005087	A.S.ENTERPRISE
+10005088	M.R.TRADERS
+10005092	M/S. SARKAR ENTERPRISE
+10005093	M/S. ANJU TRADING COMPANY
+10005094	RAHUL MONDAL
+10005095	SANY TRADING
+10005103	RINA DEVI
+10005104	NABIN ENTERPRISES
+10005112	PRATEEK COMMERCIAL
+10005113	MONIRUL ISLAM
+10005114	MD. SADDAM HOSSIAN
+10005242	ILAM MONDAL
+10005243	BUBAI CHANDA
+10005246	ROUNAK ENTERPRISE
+10005252	SRABANI DEY
+10005253	KESHAB SARDA
+10005258	SANJIT KUMAR SINGHA
+10005260	JAKIR HOSSAIN
+10005261	KRISHNA JUTE SUPPLY
+10005268	PURUSTTOAM LAL PARIK
+10005269	JUHI CHHAJER
+10005270	RAJAT CHHAJER
+10005271	NITU CHHAJER
+10005277	DHARMENDRA KUMAR RAKHECHA
+10005278	INDRA DEVI SUKHLECHA
+10005286	KHINWRAJ SUKHLECHA & SONS (HUF)
+10005288	MD. MOMIN MONDAL
+10005289	SANJIT KUMAR SINGHA & HUF
+10005294	HARAN CHANDRA BISWAS
+10005295	BHAGAWATI PRASAD BORA
+10005296	PARSHURAM LOHIA
+10005297	POONAM CHAND BOTHRA
+10005301	JAICHANDLAL SUKHLECHA
+10005302	RANJITA GIRIA
+10005304	GOLAPI BOTHRA
+10005306	PANKAJ KUMAR CHHAJER
+10005307	DELOWAR MONDAL
+10005309	NEERAJ JAIN
+10005313	CHAMPALAL SUKHLECHA
+10005315	MAHESH KUMAR MAHESHWARI HUF
+10005316	DIPANWITA SAHA
+10005317	SASWATI SARKAR
+10005320	RAMESHWAR LAL NARAYAN PRASAD HUF
+10005328	ARADHANA
+10005347	SAHA & CO.
+10005348	MAHESH KUMAR MAHESHWARI
+10005351	DULAL SARKAR
+10005356	MOOLCHAND BEGWANI
+10005357	PINKI LUNAVAT
+10005358	JAY MAHABIR TRADING
+10005359	SOHANLAL MOHTA & SONS(HUF)
+10005360	RAM AWATAR MAHESHWARI HUF
+10005365	MITHUN GHOSH
+10005368	SAMIRAN MANDAL
+10005369	SUMITRA DEBI MAHESWARI
+10005371	MAHESWARI ENTERPRISE HUF
+10005375	PRADIP ROY TALUKDAR
+10005376	SARLA DEVI JAIN
+10005378	MD ABDUL RAHIM
+10005379	BINDIYA SETHIA
+10005385	SIMA AGARWALA
+10005386	BIJAY AGARWALLA
+10005390	DIVYA MANIHAR
+10005393	BISWANATH BISWAS
+10005394	NARESH CHANDRA ROY TALUKDAR
+10005395	MOUMITA JUTE TRADERS
+10005396	MAHAK DARAK
+10005398	A.K.FAZLUL HOQUE
+10005401	G.R.RATHI (HUF)
+10005402	JAGADAMBA JUTE SUPPLIER
+10005403	A.T.C. JUTE SUPPLY
+10005404	SOYEB JUTE SUPPLY
+10005405	RAVI KUMAR SOMANI HUF
+10005406	SHUVO TRADERS
+10005407	SHYAM ENTERPRISES
+10005408	JAI SHREE GANAPATI TRADERS
+10005410	AKHIL CHANDRA SARKAR
+10005414	SANDIP SOMANI (HUF)
+10005416	DWARKA PRASAD JOSHI
+10005419	SUDIP BHAUMIK
+10005421	MAJU TRADERS
+10005422	DEBASISH ADHIKARY
+10005427	NURUL TRADERS
+10005429	RAHUL AGARWAL
+10005430	MANOJ CARRYING CO.
+10005435	SUDHIR PODDAR
+10005438	SHRI BALAJI TRADERS
+10005439	SHILPA AGARWALLA
+10005444	ASHISH MORE & CO
+10005446	RAJIB JUTE TRADERS
+10005447	SRI RAGHUNATH JUTE AND CROPS
+10005448	SANDIP SOMANI
+10005456	SELINA ISLAM
+10005457	RAJESH KUMAR BENGANI HUF
+10005473	AJMER ALI
+10005480	MD KHALILULLAH
+10005481	APOLLO ENTERPRISE
+10005483	HASTINGS MILL LTD.
+10005485	SUNITA SAHA
+10005488	PADMAWATI MARKETING PVT.L
+10005489	RAJENDRA KUMAR CHORARIA (
+10005490	ANUPAMA  TULSHAN
+10005491	ARHAM  TRADERS
+10005492	BANMALI MONDAL
+10005493	G.K ENTERPRISES
+10005494	GOYAL JUTE SUPPLY
+10005495	SMRITI VINIMAY (P) LIMITE
+10005496	SHREE BHAGIRATH COMMERCIA
+10005497	SARTAJ TRADE INTERNATIONA
+10005498	MREL (UNIT; GONDALPARA JU
+10005499	MREL (UNIT-INDIA JUTE MIL
+10005500	MUNDHRA MERCANTILE PVT.LT
+10005501	SABLAWAT JUTE  INDUSTRIES
+10005502	SAROJ AGRO FIBRES PVT. LT
+10005503	SHAKTIGARH TEXTILE & IND
+10005504	SHAKTIGARH TEXTILE AND IN
+10005505	SWARNARATNA INVESTMENT PV
+10005506	THE JUTE CORPORATION OF I
+10005507	UDAICHAND DEBIPRASAD MAHE
+10005515	MOSARAF MONDAL
+10005516	BISWAJIT BISWAS
+10005524	YASH AGRO PRODUCTS
+10005532	ASRAFUL HAQUE
+10005536	JOYSANKAR SAHA
+10005540	NEXCI JUTE TRADING
+10005541	KRISHNENDU HAZRA
+10005545	NAVIN JAIN
+10005547	UDAY SANKAR MODAK
+10005551	SUBRATA MONDAL
+10005552	MAA LAXMI TRADING CO.
+10005553	SURESH CHANDRA BISWAS
+10005554	NUPUR SAHA
+10005555	S.M.TRADERS
+10005558	CHUMKI DUTTA
+10005560	ANITA LAHOTI
+10005563	MANISH ENTERPRISES
+10005569	PURUSOTTAM LAL PARIK HUF
+10005570	JAKIRUL SEKH
+10005571	TISTA ENTERPRISE
+10005575	RISE TRADE & TRANSPORT
+10005576	BANI ISRAIL
+10005577	BASANT KUMAR BHANSALI (HUF)
+10005581	OMPRAKASH ASHOK KUMAR
+10005582	K K AGARWAL & SONS HUF
+10005583	MINA AGARWALA
+10005584	PUJA AGARWAL
+10005585	RADHE SHYAM MOHATA HUF
+10005586	REGIUS MERCANTILE PVT LTD
+10005590	HAJRAT MONDAL
+10005591	MANIK MONDAL
+10005592	TAOFIK PASHA
+10005595	VAI VAI ENTERPRISE
+10005600	DINESH SAHA
+10005606	PAYAL PUGALIA
+10005608	SONI GOPALIKA
+10005609	KAVEETA GOPALIKA
+10005610	GHASIRAM AGARWAL HUF
+10005617	SELINA KHATUN
+10005618	SURAJ DEBI JAIN
+10005619	M M TRADING
+10005620	N.S.JUTE INTERPRISE
+10005625	SATYANARAYAN GHOSH
+10005627	SOUREN SARKAR
+10005636	PARITOSH GHOSH
+10005640	GOLAM RABBYEE
+10005644	FAZLUR RAHAMAN MONDAL
+10005648	ABDUL JOLIL
+10005655	SAMPAT DEBI PARIK
+10005658	M A KHAN JUTE TRADING & ROPE INDUST
+10005661	RUHUL AMIN
+10005662	SHREE HANUMAN TRADING CO.
+10005665	SAHIDAR RAHAMAN
+10005669	SABBIR ALAM
+10005680	ANKIT KUMAR AGARWAL
+10005681	BISWAJIT DEY
+10005682	HARI LAL AGARWAL
+10005684	PUSHPA BIBI
+10005690	NARIKELBARI JUTE PRESS
+10005696	SHREE DINESH TRADING COMPANY
+10005697	DIPAK KUMAR BISWAS
+10005705	NARU GOPAL SAHA
+10005706	PRATUL KUMAR GHOSH
+10005707	RABINDRA NATH SAHA (HUF)
+10005708	KESHAB SARDA (HUF)
+10005712	SAYFUL MONDAL
+10005718	SUJIT KUMAR BISWAS
+10005730	MANISH KUMAR BAJAJ
+10005731	SUBRATA BARMAN
+10005736	PRITAM GHOSH
+10005743	MERINA KHATUN
+10005746	KHUSBOO DHARIWAL
+10005752	SAMPA BISWAS
+10005755	NITAI GHOSH
+10005757	ANUPAM BANERJEE
+10005762	GOBINDA GHOSH
+10005763	SUKANTA BISWAS
+10005765	PRASENJIT BISWAS
+10005766	OLIUS KANCHAN MONDAL
+10005767	PRAMITA SAHA
+10005769	DIPAK MANDAL
+10005777	EKTA ENTERPRISE
+10005778	KRISHNA PRASAD SAHA
+10005779	DILIP KUMAR BISWAS
+10005780	ABDUS SABUR
+10005781	MANOJ KUMAR SAHA
+10005782	HASANUJJAMAN SEKH
+10005783	R. R. TRADERS
+10005786	SANKAR KUMAR CHOWDHURY
+10005787	NIJAM JUTE BUSINESS
+10005789	NAJRUL ISLAM
+10005790	MD ENAYETULLAH MOLLA
+10005791	JABIR ENTERPRISE
+10005792	AJIZ AMAN MAHALDAR
+10005793	LALTU SEKH
+10005799	GOLAM KIBRIA
+10005800	JAYASHRI SARKAR BISWAS
+10005801	HASIBUL MANDAL
+10005807	MD WASIL
+10005808	SAQLAIN MUSTAQ
+10005811	MD. SERAJUDDIN SHIEK
+10005812	MD. ABDUL RAKIB
+10005814	PINTU MOLLA
+10005815	WASIM MONDAL
+10005817	SAMIUL JUTE FACTORY
+10005819	MD. AMIRUL RAHAMAN
+10005821	BIKASH SARKAR
+10005822	SANGEETA DUTTA
+10005824	SWETA JAIN
+10005828	MONDAL ENTERPRISE
+10005833	ISMAIL SK
+10005837	MASUMA ENTERPRISE
+10005838	PRAKASH JAIN
+10005840	SUPRIYO GHOSH
+10005841	NIJAMUL BISWAS
+10005842	SHREE KRISHNA PODAR
+10005843	ANIL SARKAR
+10005846	RINKU HOSSAIN MANDAL
+10005849	RAJDEEP PAUL
+10005850	BISHNU PAUL
+10005852	JESMINNAHAR KHATUN
+10005857	UDAICHAND DEBIPRASAD MAHESHWARI
+10005862	BAJRANG JUTE SUPPLY
+10005863	KAPIL CHANDRA GHOSH
+10005864	UTTAM GHOSH
+10005871	SHYAMPADA MONDAL
+10005873	JALALUDDIN SARKAR
+10005878	MD ZAMARUL ISLAM
+10005879	AMRIN TRADERS
+10005884	MURSHED SHAIK
+10005885	SUSHIL KUMAR BANIK
+10005887	ANKIT BORAR HUF
+10005889	JAHIRUL MONDAL
+10005892	PALASH BISWAS
+10005893	MANOJ KUMAR CHHAJER(HUF)
+10005898	MASRAKUL ALAM
+10005900	SUBHAS KOCHAR
+10005906	GOLAM GAUS MONDAL
+10005909	MAA MALATI ENTERPRISE
+10005911	N.S JUTE INTERPRISE
+10005920	JAI MATA DI TRADERS
+10005921	REWANT MAL DAGA
+10005924	MAA LAXMI ENTERPRISE
+10005925	HARISH LAHOTI & SONS HUF
+10005926	INDRA DEBI JAIN
+10005929	T P JUTE ENTERPRISE
+10005931	BRIJ RATAN BINANI
+10005934	BIMALA DEVI PANDIA
+10005936	SAMSUDDIN MONDAL
+10005937	KRISHNA CHANDRA GHOSH
+10005940	PRANAB KUMAR DATTA
+10005941	KAILASH NARAYAN MOHATA HUF
+10005942	AMIRUL JUTE SUPPLY
+10005943	SANKAR NARAYAN SADHUKHAN
+10005945	NIMAI JUTE SUPPLY LLP
+10005946	CHANDA DEVI BOTHRA
+10005949	SHRITE BHUTTA BHANDER
+10005950	MS ASSAM TRADERS
+10005952	PARVATI ENTERPRISES
+10005953	BIDYUT KUMAR SAHA
+10005957	CHANDAN SAHA TRADERS
+10005961	RIMPA KHATUN
+10005962	ANANTA ADHIKARI
+10005967	E Z TRADERS
+10005968	MITHU MD
+10005969	ABHIJIT BHOWMICK
+10005972	JUTOB IMPEX
+10005977	NIRMAL ADHIKARI
+10005980	VAWANI SUPPLIERS
+10005986	JOYLAL MALITHA
+10005991	MAHIDUR RAHAMAN
+10005994	SHAH ENTERPRISE
+10005995	SUSHIL KUMAR BINANI
+10005998	PARTHA SAHA
+10005999	JAJU JUTE SUPPLY
+10006000	BIMLA BAJAJ
+10006010	JESMINA BEGUM
+10006012	PULOKESH MONDAL
+10006015	UMANG DUGAR
+10006018	PRAKASH BISWAS
+10006019	SANJAY TRADING COMPANY
+10006022	MIJAN SK
+10006024	HANUMAN TRADING COMPANY
+10006027	MITASHRI SAHA
+10006031	P. C. ENTERPRISES
+10006032	SIMA BAJAJ
+10006034	INDER CHAND JAIN HUF
+10006035	BHASHAN CHANDRA KARMAKAR
+10006036	PREMLAL BAJAJ
+10006038	MAA TRADERS
+10006043	MATIUR RAHAMAN
+10006047	KANAI BISWAS
+10006049	MANOJ KUMAR BAGRA HUF
+10006050	DEBI PRASAD BAJAJ
+10006057	RAJESH KUMAR JAIN HUF
+10006058	MAHAVIR ENTERPRISES
+10006061	MAHAMMAD AKIK
+10006063	HARIHAR GHOSH
+10006068	BISWAS JUTE PRESS
+10006069	BISWAS ENTERPRISE
+10006070	ASISH SAHA
+10006076	NIRMAL KUMAR MONDAL
+10006077	D. D. TRADING CO
+10006080	SUMANTA SINGHA
+10006082	RACHANA JUTE SUPPLY
+10006084	LAXMI GANESH TRADERS
+10006088	BHAJAN MONDAL
+10006093	SRI KRISHNA BHANDER
+10006096	HIGAIN ORGANIC PRIVATE LIMITED
+10006097	JUTE SUPPLIERS.
+10006098	TASNIA MULTI SERVICES
+10006103	BANGABHUMI FARMERS PRODUCER COMPANY
+10006105	SK ENTERPRISE
+10006106	SUDHIR KUMAR MONDAL
+10006107	BRINDABAN ENTERPRISE
+10006108	MOHIT JUTE SUPPLY
+10006109	SIPRA SAHA
+10006111	SARAS TRADING
+10006113	RAMAPROSAD DAS
+10006114	SHEMA JUTE AGENCY
+10006120	MAINUL ISLAM
+10006127	KANAI LAL MITRA
+10006128	RAJIB JUTE SUPPLY
+10006130	MAHABIR PRASAD JAIN
+10006145	IMRAN SHAHIB
+10006164	M R ENTERPRISE
+10006165	MAHESH TRADING
+10006168	HASEN ALI
+10006190	S.M. JUTE CORPORATION
+10006191	SUMITA SAHA
+10006192	RATNA SARKAR
+10006193	MAA BASANTI TRADING COMPANY
+10006200	MOROMI ENTERPRISE
+10006202	MD. MOZAMMEL HOQUE
+10006203	SAHIDUL ISLAM
+10006206	RAHIMUDDIN SHEIKH
+10006208	MOBARAK ALI
+10006209	JUTE ENTERPRISE
+10006210	ARUN SARKAR
+10006215	JAMSED SHAH
+10006216	AANICHHUUR HALSANA
+10006219	NAJIBUL ISLAM
+10006221	ASHIS KUMAR PAL
+10006222	SUKURUDDIN SK
+10006224	JAHEDUL MONDAL
+10006230	KV AGRI RISE
+10006231	GIRADHARILAL RAJESH KUMAR
+10006233	AINUDDIN HALSANA
+10006234	SHREE RAM TRADERS
+10006235	AJAY KUMAR
+10006242	RASID ENTERPRISE
+10006247	SAMIR KUMAR DEY
+10006255	PANISHEOLA SAMABAY KRISHI UNNAYAN
+10006260	KALIPADA MONDAL
+10006261	MONI TRADERS
+10006266	MANISHA YEASMIN
+10006267	SONALI TRADERS
+20000002	HENRY W.PEABODY & CO. INC
+20000003	POPULAR JUTE EXCHNAGE LTD
+20000004	FIBRE N FIBRE
+20000006	A.R.JUTE TRADING
+20000007	A.R.M.JUTE BAILING
+20000008	AB JUTE TRADING
+20000009	ABDUR RAZZAQUE LTD.
+20000010	ABIR JUTE TRADING
+20000011	ABUL KASHEM
+20000012	BABUL JUTE TRADING
+20000013	COSMIC FIBRES
+20000015	EASTERN TRADES
+20000016	F.R.JUTE TRADING CO.
+20000017	GOLDEN JUTE SUPPLY
+20000018	GOOD JUTE INTERNATIONAL
+20000019	JUTE EXPO TRADING LTD.
+20000021	MYMCO JUTE PRESS LTD.
+20000023	PROGOTI JUTE SUPPLY
+20000024	R.L.ENTERPRISE
+20000025	RANA JUTE TRADING
+20000026	REZA JUTE TRADING
+20000027	S.B.JUTE INTERNATIONAL
+20000028	S.S.JUTE TRADING
+20000029	SARDER TRADING CORPORATION
+20000030	SHAHNEWAZ JUTE BAILING P.LTD.
+20000031	THE BENGAL JUTE TRADING
+20000033	UTTARA JUTE TRADERS
+20000034	ZAMAN BROTHERS
+20000035	BOGRA JUTE MILLS LIMITED
+20000036	NATORE JUTE BALLING
+20000037	JANANI ENTERPRISE (BD)
+20000038	SIBBIR ENTERPRISE (BD)
+20000045	BHAI BHAI ENTERPRISE
+20000046	N. S. JUTE BAILING
+20000055	MD. ABDUL KARIM
+20000065	BROTHERS ENTERPRISE
+
+**CRITICAL EXTRACTION RULES:**
+
+1.  **Page-Level Data:** First, find the main data for the *entire page*.
+    * `PAGE_DATE`: The date at the top (e.g., "29/10/25"). Standardize to **DD-MM-YYYY**.
+    * `OPENING_PRICE`: The price prefixed with "op-" (e.g., "op- 9750/9800"). Extract the full string "9750/9800".
+
+2.  **Line Item Data ("saudas"):** Scan the page line by line. Create one JSON object for each entry and add it to the `saudas` list.
+    * **Continuation Logic:** If a line starts with "- " or "->", it is a continuation. You **MUST** use the `Broker`, `Area`, and `Mukkam` from the line directly above it.
+    * **Broker:** The broker name (e.g., "Rakesh Ghoshal").
+    * **Mukkam:** The location name (e.g., "SINGUR", "HARIPAL"). Use the reference list to correct spelling. If no Mukkam is listed, set to `null`.
+    * **Bales_Mark & Area Logic (STRICT RULES):**
+        * Look at the *original text* of the mark (e.g., "SB", "LA", "BH"):
+            * `SB` or `SB (Loose)` -> `Area` **MUST** be `"SOUTH BENGAL"`.
+            * `BH` or `BH (Loose)` -> `Area` **MUST** be `"BIHAR"`.
+            * `LA` or `LA (Loose)` -> `Area` **MUST** be `"ASSAM"`.
+        * **Rule 2 (Mukkam Map):** If none of the above codes are present, look up the Area based on the identified `Mukkam` using the reference list.
+        * **Rule 3 (Continuation):** If a line is a continuation (starts with "-"), copy the `Area` from the line above.
+        * **Rule 4 (Default):** If no area is found, set to `null`.
+        * **Bales_Mark Value:**
+            * If `(Loose)` is written (e.g., `SB (Loose)`), `Bales_Mark` **MUST** be `"Loose"`.
+            * If the mark is `SB` (and not loose), `Bales_Mark` **MUST** be `"loose"`.
+            * If the mark is `BH`, `LA`, or any other text (and not loose), `Bales_Mark` **MUST** be `""` (an empty string).
+    * **No_of_Lorries:** The number *before* the "x" (e.g., "5x95" -> 5). Must be a **number**.
+    * **No_of_Bales:** The number *after* the "x" (e.g., "5x95" -> 95). Must be a **number**.
+    * **Grades:** The grade numbers (e.g., "5/6", "4/5/6/SD").
+        * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of strings**.
+        * "4/5/6" -> `["TD4", "TD5", "TD6"]`
+        * "5/6" -> `["TD5", "TD6"]`
+        * "5/6/SD" -> `["TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
+        * "4/5/6/SD" -> `["TD4", "TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
+    * **Rates:** The list of rates (e.g., "10400/10100", "9800/9600/9750").
+        * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of numbers**.
+        * "10400/10100" -> `[10400, 10100]`
+        * "9800/9600/9750" -> `[9800, 9600, 9750]`
+    * **Unit:** The mill codes (e.g., "SHM", "GJM", "SKT") AND the numbers written below them which make sure that the total of all the lorries doesn't exceed the number of lorry(s).
+        * **CRITICAL LOGIC:** Combine them into a single string.
+        * If "SHM" has "3" under it -> `"SHM - 3"`
+        * If "GJM" has "2" under it -> `"GJM - 2"`
+        * If "SHM" has "2" and "SKT" has "3" -> `"SHM - 2, SKT - 3"`
+
+**CRITICAL OUTPUT FORMAT (EXAMPLE):**
+Your output MUST be a **single JSON object** (`{}`). Do not include *any* introductory text, explanations, or markdown formatting (like ```json). Your entire response must be the JSON object itself.
+
+{
+  "PAGE_DATE": "29-10-2025",
+  "OPENING_PRICE": "9750/9800",
+  "saudas": [
+    {
+      "Broker": "Rakesh Ghoshal",
+      "Area": "SOUTH BENGAL",
+      "Mukkam": "KRISHNANAGAR",
+      "Bales_Mark": "loose",
+      "No_of_Lorries": 3,
+      "No_of_Bales": 80,
+      "Grades": ["TD5", "TD6", "TD5D"],
+      "Rates": [9800, 9600, 9750],
+      "Unit": "SHM - 1, MIJM - 2"
+    },
+    {
+      "Broker": "Rakesh Ghoshal",
+      "Area": "BIHAR",
+      "Mukkam": "PURNEA",
+      "Bales_Mark": "",
+      "No_of_Lorries": 2,
+      "No_of_Bales": 82,
+      "Grades": ["TD6", "TD7"],
+      "Rates": [10000, 9700],
+      "Unit": "GJM - 2"
+    },
+    {
+      "Broker": "Roshan Tradell",
+      "Area": "SOUTH BENGAL",
+      "Mukkam": "SINGUR",
+      "Bales_Mark": "",
+      "No_of_Lorries": 5,
+      "No_of_Bales": 95,
+      "Grades": ["TD5", "TD6"],
+      "Rates": [10400, 10100],
+      "Unit": "SHM - 2, SKT - 3"
+    },
+    {
+      "Broker": "Subrata Pathway",
+      "Area": "ASSAM",
+      "Mukkam": "TARABARI",
+      "Bales_Mark": "Loose",
+      "No_of_Lorries": 1,
+      "No_of_Bales": 80,
+      "Grades": ["TD4", "TD5", "TD6"],
+      "Rates": [10400, 9750, 9550],
+      "Unit": "SHM - 1"
+    }
+  ]
+}
+"""
+        # --- [END NEW SAUDA PROMPT - V8] ---
+        response = model.generate_content([prompt_text, img])
+        ai_response_text = response.text
+
+        # "Smarter" JSON Cleanup
+        start_index = ai_response_text.find('{')
+        end_index = ai_response_text.rfind('}')
+        if start_index != -1 and end_index != -1:
+            clean_json_text = ai_response_text[start_index : end_index + 1]
+            json.loads(clean_json_text)  # Validate that it's good JSON
+            return clean_json_text
+        else:
+            return None  # Return None to signal failure
+    except Exception as e:
+        if "API Key not valid" in str(e):
+            st.error("🚨 CRITICAL ERROR: The Google AI API Key is invalid or expired. Please check your secrets file.")
+        else:
+            st.error(f"An error occurred during AI processing: {e}")
+        return None
+
+# --- Callbacks for State Management ---
+def reset_process():
+    """
+    Clears all session state variables to reset the app.
+    Does NOT clear login state.
+    """
+    keys_to_clear = [
+        "extraction_done", "result_list", "current_edit_index",
+        "active_input", "camera_open", "captured_image_data",
+        "show_charts" # Include show_charts in reset
+    ]
+    for key in keys_to_clear:
+        if key in st.session_state:
+            st.session_state[key] = None
+    st.session_state.result_list = []
+    st.session_state.extraction_done = False
+    st.session_state.reset_counter += 1
+    st.session_state.camera_open = False
+    st.session_state.captured_image_data = None
+    st.session_state.show_charts = False # Default chart state (no longer used on-screen)
+    st.rerun()
+
+def set_active_input_upload():
+    st.session_state.active_input = "upload"
+    st.session_state.camera_open = False
+    st.session_state.captured_image_data = None
+    st.session_state.extraction_done = False
+    st.session_state.result_list = []
+    st.session_state.current_edit_index = 0
+
+def handle_camera_snap():
+    camera_key = f"camera_input_key_{st.session_state.reset_counter}"
+    if st.session_state[camera_key] is not None:
+        st.session_state.captured_image_data = st.session_state[camera_key]
+        st.session_state.active_input = "camera"
+        st.session_state.extraction_done = False
+        st.session_state.result_list = []
+        st.session_state.current_edit_index = 0
+    else:
+        st.session_state.captured_image_data = None
+        st.session_state.active_input = None
+
+# --- PAGINATION CALLBACKS ---
+def save_and_go_next():
+    if st.session_state.current_edit_index < len(st.session_state.result_list) - 1:
+        st.session_state.current_edit_index += 1
+
+def save_and_go_prev():
+    if st.session_state.current_edit_index > 0:
+        st.session_state.current_edit_index -= 1
+
+# --- [NEW] Add/Delete Row Callbacks ---
+def add_sauda_row():
+    """Appends a new, empty sauda dictionary to the current document's list."""
+    if st.session_state.result_list:
+        current_doc = st.session_state.result_list[st.session_state.current_edit_index]
+        if 'saudas' not in current_doc or not isinstance(current_doc['saudas'], list):
+            current_doc['saudas'] = []
+        current_doc['saudas'].append({
+            "Broker": "", "Area": "", "Mukkam": "", "Bales_Mark": "",
+            "No_of_Lorries": 0, "No_of_Bales": 0,
+            "Grades": [], "Rates": [], "Unit": ""
+        })
+
+def delete_sauda_row():
+    """Removes the specific row index from the current document's list."""
+    if st.session_state.result_list:
+        current_doc = st.session_state.result_list[st.session_state.current_edit_index]
+        row_to_delete = st.session_state.row_to_delete_input - 1 # Convert 1-based to 0-based index
+        if 'saudas' in current_doc and isinstance(current_doc['saudas'], list):
+            if 0 <= row_to_delete < len(current_doc['saudas']):
+                current_doc['saudas'].pop(row_to_delete)
+                st.toast(f"Deleted Row {row_to_delete + 1}", icon="🗑️")
+            else:
+                st.toast("Invalid Row Number", icon="⚠️")
+
+# --- Main App UI (Only shown if logged in) ---
+if True:  # Replaced with if True to enable main app directly
+    st.set_page_config(
+        page_title="🤖 Intelligent Jute Sauda OCR",
+        page_icon="📜",
+        layout="wide"
+    )
+    st.markdown(corporate_css, unsafe_allow_html=True)
+
+    # --- 1. Sidebar ---
+    with st.sidebar:
+        st.title("📄 Controls")
+        st.markdown("### Hello Sir")
+        st.divider()
+
+        # [UPDATED] Removed "Show Visual Charts" checkbox from the sidebar
+
+        # [UNCHANGED] Row Management stays here
+        if st.session_state.extraction_done and st.session_state.result_list:
+            st.write("### Row Management")
+            col_del_input, col_del_btn = st.columns([1, 2])
+            with col_del_input:
+                current_doc_sb = st.session_state.result_list[st.session_state.current_edit_index]
+                num_rows_sb = len(current_doc_sb.get('saudas', []))
+                st.session_state.row_to_delete_input = st.number_input(
+                    "Row #",
+                    min_value=1,
+                    max_value=num_rows_sb if num_rows_sb > 0 else 1,
+                    step=1,
+                    label_visibility="collapsed"
+                )
+            with col_del_btn:
+                st.button("🗑️ Delete Row", on_click=delete_sauda_row, use_container_width=True)
+
+            st.write("")
+            st.button("➕ Add New Row", on_click=add_sauda_row, use_container_width=True)
+            st.divider()
+
+        with st.expander("🤔 How to Use This App", expanded=True):
+            st.info("This app uses AI to read your handwritten Sauda ledger pages and turn them into structured JSON data.")
+            st.write("""
+                1.  **Provide Sauda Ledger Image(s):** Upload one or more files (JPG, PNG, PDF).
+                2.  **Take a Picture:** (Local Only) Use the 'Take aPicture' tab to snap a photo.
+                3.  **Extract Data:** Click the 'Extract Data' button. The AI will process all files.
+                4.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, Opening Price, and all Sauda entries.
+                5.  **Download:** Click 'Download as PDF' to download the report AND automatically save data to the database.
+                6.  **Reset:** Click "Reset Process" to start over.
+            """)
+            st.write("---")
+            st.write("To change themes, click the `...` in the top-right, go to `Settings`, and choose `Light` or `Dark`.")
+
+    # --- 2. Main Page Title & Reset Button ---
+    title_col, button_col = st.columns([4, 1])
+    with title_col:
+        st.title("📜 Intelligent Jute Sauda OCR")
+        st.write("Effortlessly extract data from your handwritten Sauda ledger pages.")
+    with button_col:
+        st.write("")
+        if st.button("🔄 Reset Process", use_container_width=True, help="Click to clear all data and start over"):
+            reset_process()
+
+    # --- Check if API key is set ---
+    if not MY_API_KEY:
+        st.error("🚨 CRITICAL ERROR: API Key not set! 🚨")
+        st.markdown("This application requires a Google AI API Key to function.")
+        st.markdown("Please add your API Key to the `MY_API_KEY` variable in the code.")
+        st.stop()
+    else:
+        # --- 3. Step 1: Provide an Image (with Tabs) ---
+        with st.container(border=True):
+            st.header("Step 1: Upload Sauda Ledger Page(s)")
+            upload_tab, camera_tab = st.tabs(["📁 Upload File(s)", "📸 Take a Picture"])
+
+            image_data_list = []
+            images_to_process = []
+            image_names = []
+
+            with upload_tab:
+                upload_key = f"uploaded_file_key_{st.session_state.reset_counter}"
+                uploaded_files = st.file_uploader(
+                    "Choose one or more Sauda scans (PNG, JPG, JPEG, PDF)...",
+                    type=["jpg", "jpeg", "png", "pdf"],
+                    key=upload_key,
+                    on_change=set_active_input_upload,
+                    accept_multiple_files=True,
+                    label_visibility="collapsed"
+                )
+                if st.session_state.active_input == "upload" and uploaded_files:
+                    image_data_list = uploaded_files
+
+            with camera_tab:
+                camera_key = f"camera_input_key_{st.session_state.reset_counter}"
+                if not st.session_state.camera_open:
+                    if st.button("Open Camera", use_container_width=True):
+                        st.session_state.camera_open = True
+                        st.rerun()
+                else:
+                    captured_image = st.camera_input(
+                        "Take a Picture of a Document",
+                        key=camera_key,
+                        on_change=handle_camera_snap
+                    )
+                    if st.button("Close Camera", use_container_width=True):
+                        st.session_state.camera_open = False
+                        st.rerun()
+                if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                    image_data_list = [st.session_state.captured_image_data]
+
+            if len(image_data_list) > 20:
+                st.error(f"Batch Limit Exceeded: You uploaded {len(image_data_list)} files. Please select a maximum of 20 files at a time.")
+                st.session_state.active_input = None
+                image_data_list = []
+
+            if image_data_list:
+                col1, col2 = st.columns([2, 3])
+                with col1:
+                    if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                        img = Image.open(st.session_state.captured_image_data)
+                        st.image(img, caption="Your Document Image", width=300)
+                    elif st.session_state.active_input == "upload":
+                        st.info(f"📁 {len(image_data_list)} document(s) selected.")
+                        for f in image_data_list[:3]:
+                            st.caption(f" - {f.name}")
+                        if len(image_data_list) > 3:
+                            st.caption(f"  ...and {len(image_data_list) - 3} more.")
+                with col2:
+                    if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                        st.success("✅ Photo captured! Ready to extract.")
+                    elif st.session_state.active_input == "upload":
+                        st.info(f"{len(image_data_list)} file(s) provided. Ready to extract?")
+                    if st.button(f"✨ Extract Data from {len(image_data_list)} file(s)", type="primary", use_container_width=True):
+                        all_results = []
+                        with st.spinner("🤖 Intelligent OCR is processing... This may take a moment."):
+                            st.session_state.extraction_done = False
+                            st.session_state.result_list = []
+                            st.session_state.current_edit_index = 0
+                            images_to_process = []
+                            image_names = []
+                            preprocess_bar = st.progress(0, text="Pre-processing files (converting PDFs)...")
+
+                            if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                                try:
+                                    uploaded_file = st.session_state.captured_image_data
+                                    uploaded_file.seek(0)
+                                    img_bytes = uploaded_file.getvalue()
+                                    images_to_process.append(img_bytes)
+                                    image_names.append("Captured_Image.jpg")
+                                    preprocess_bar.progress(1.0, text="Loaded 1 captured image.")
+                                except Exception as e:
+                                    st.warning(f"Could not load camera image. Error: {e}")
+                            elif st.session_state.active_input == "upload":
+                                for i, uploaded_file in enumerate(image_data_list):
+                                    file_name = f"File {i+1}"
+                                    if hasattr(uploaded_file, 'name'):
+                                        file_name = uploaded_file.name
+                                    preprocess_bar.progress((i + 1) / len(image_data_list), text=f"Loading {file_name}...")
+                                    file_type = uploaded_file.type
+                                    if file_type == "application/pdf":
+                                        try:
+                                            doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+                                            for page_num, page in enumerate(doc):
+                                                pix = page.get_pixmap(dpi=200)
+                                                img_bytes = pix.tobytes("png")
+                                                images_to_process.append(img_bytes)
+                                                image_names.append(f"{file_name} (Page {page_num + 1})")
+                                            doc.close()
+                                        except Exception as e:
+                                            st.warning(f"Could not read PDF {file_name}. Skipping. Error: {e}")
+                                    else:  # It's a JPG, PNG, etc.
+                                        uploaded_file.seek(0)
+                                        img_bytes = uploaded_file.getvalue()
+                                        images_to_process.append(img_bytes)
+                                        image_names.append(file_name)
+                            preprocess_bar.empty()
+
+                            total_images_to_process = len(images_to_process)
+                            if total_images_to_process > 0:
+                                my_bar = st.progress(0, text=f"Starting AI extraction for {total_images_to_process} image(s)...")
+                                for i, img_bytes in enumerate(images_to_process):
+                                    file_name = image_names[i]
+                                    my_bar.progress((i + 1) / total_images_to_process, text=f"Processing {i+1}/{total_images_to_process}: {file_name}")
+                                    json_string = get_json_from_image(img_bytes, MY_API_KEY)
+                                    if json_string:
+                                        try:
+                                            item_object = json.loads(json_string)
+                                            all_results.append(item_object)
+                                        except Exception as e:
+                                            st.warning(f"File {file_name} processing failed. AI returned invalid JSON. Error: {e}")
+                                    else:
+                                        st.warning(f"File {file_name} processing failed. AI returned no data.")
+                                my_bar.empty()
+
+                            if all_results:
+                                st.session_state.result_list = all_results
+                                st.session_state.current_edit_index = 0
+                                st.session_state.extraction_done = True
+                                st.success(f"Extraction Complete! {len(all_results)} documents processed from {total_images_to_process} image(s). See results in Step 2.")
+                            else:
+                                st.error("Extraction failed. No files could be processed.")
+
+        # --- 4. Step 2 & 3: Review, Edit, & Download ---
+        if st.session_state.extraction_done and st.session_state.result_list:
+            # [UPDATED] On-screen Visual Analysis section has been removed entirely
+
+            with st.container(border=True):
+                st.header("Step 2: Review & Edit Extracted Data")
+
+                # Pagination info
+                total_items = len(st.session_state.result_list)
+                current_index = st.session_state.current_edit_index
+                st.info(f"You are editing **Page {current_index + 1} of {total_items}**.")
+                current_document = st.session_state.result_list[current_index]
+
+                # Page-level fields
+                st.subheader("Page-Level Details")
+                header_cols = st.columns(2)
+                with header_cols[0]:
+                    current_document['PAGE_DATE'] = st.text_input(
+                        "Page Date",
+                        value=current_document.get('PAGE_DATE', ''),
+                        key=f"PAGE_DATE_{current_index}"
+                    )
+                with header_cols[1]:
+                    current_document['OPENING_PRICE'] = st.text_input(
+                        "Opening Price (op-)",
+                        value=current_document.get('OPENING_PRICE', ''),
+                        key=f"OPENING_PRICE_{current_index}"
+                    )
+
+                if 'saudas' not in current_document or not isinstance(current_document.get('saudas'), list):
+                    current_document['saudas'] = []
+
+                # Pre-process lists to strings for editor
+                for s in current_document['saudas']:
+                    if isinstance(s.get('Grades'), list):
+                        s['Grades'] = ", ".join(map(str, s['Grades']))
+                    if isinstance(s.get('Rates'), list):
+                        s['Rates'] = ", ".join(map(str, s['Rates']))
+
+                st.write("---")
+                st.subheader("Sauda Entries")
+                current_document['saudas'] = st.data_editor(
+                    current_document['saudas'],
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"data_editor_{current_index}",
+                    column_config={
+                        "Broker": st.column_config.TextColumn("Broker", required=True),
+                        "Area": st.column_config.TextColumn("Area"),
+                        "Mukkam": st.column_config.TextColumn("Mukkam"),
+                        "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
+                        "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
+                        "No_of_Bales": st.column_config.NumberColumn("No. of Bales (per lorry)"),
+                        "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
+                        "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
+                        "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
+                    },
+                    column_order=("Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
+                )
+
+                st.write("---")
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col1:
+                    st.button(
+                        "⬅️ Previous",
+                        on_click=save_and_go_prev,
+                        use_container_width=True,
+                        disabled=(current_index == 0),
+                        type="primary"
+                    )
+                with col3:
+                    st.button(
+                        "Next ➡️",
+                        on_click=save_and_go_next,
+                        use_container_width=True,
+                        disabled=(current_index >= total_items - 1),
+                        type="primary"
+                    )
+
+                st.divider()
+
+                # --- Download Section ---
+                st.subheader("Download All Extracted Documents")
+
+                # Re-serialize data
+                try:
+                    full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
+                except Exception as e:
+                    st.error(f"Could not prepare data for download. Error: {e}")
+                    full_edited_json_text = "[]"
+
+                # [UPDATED] Add "Include Visual Charts" checkbox here
+                st.write("Select sections to include in your PDF report:")
+                dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
+                with dl_col1:
+                    dl_area_summary = st.checkbox("Area-wise Lorry Summary", value=True)
+                with dl_col2:
+                    dl_broker_summary = st.checkbox("Broker & Area-wise Lorry Summary", value=True)
+                with dl_col3:
+                    dl_sauda_details = st.checkbox("Entire Sauda Details", value=True)
+                with dl_col4:
+                    include_charts = st.checkbox("Include Visual Charts", value=False)  # [UPDATED]
+
+                st.write("")
+
+                dl_cols = st.columns(3)
+                with dl_cols[0]:
+                    # (JSON download removed as per earlier)
+                    st.write("")
+                with dl_cols[1]:
+                    if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts:
+                        st.warning("Please select at least one section to include in the PDF.")
+                        st.button("⬇️ Download as PDF", use_container_width=True, disabled=True)
+                    else:
+                        pdf_data = create_pdf(
+                            full_edited_json_text,
+                            dl_area_summary,
+                            dl_broker_summary,
+                            dl_sauda_details,
+                            include_charts=include_charts  # [UPDATED]
+                        )
+                        st.download_button(
+                            label="⬇️ Download as PDF (Auto-Saves to DB)",
+                            data=pdf_data,
+                            file_name=f"sauda_export_batch_{datetime.date.today().strftime('%Y-%m-%d')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            on_click=save_and_log_download
+                        )
+                with dl_cols[2]:
+                    # (TXT download removed as before)
+                    st.write("")
