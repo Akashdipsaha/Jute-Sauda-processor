@@ -12,29 +12,33 @@ from pymongo.server_api import ServerApi
 from urllib.parse import quote_plus
 import fitz
 import datetime
-import matplotlib.pyplot as plt  # Added for charting capabilities
-import tempfile                  # [UPDATED] for temp image files
-import os                        # [UPDATED] for file cleanup
+import matplotlib.pyplot as plt
+import tempfile
+import os
 
-# --- [COMMENTED OUT] Import for password hashing ---
-# try:
-#     from passlib.context import CryptContext
-# except ImportError:
-#     st.error("Missing 'passlib' library. Please install it: pip install passlib")
-#     st.stop()
+# --- NEW IMPORTS FOR EMAIL ---
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
 
-# --- [COMMENTED OUT] Password Hashing Context ---
-# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# --- Use Streamlit Secrets ---
-# Ensure these are correctly set in your environment or Streamlit secrets
-MY_API_KEY = "AIzaSyCWeRY8cV44-V9cLrhj0oBi9KhKym7YvKk"
-MONGO_USER = "Akashdip_Saha"
-MONGO_PASSWORD = "STIL@12345"
-MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
+# --- 1. LOAD SECRETS SAFELY ---
+try:
+    # Try loading from secrets.toml first
+    MY_API_KEY = st.secrets["general"]["api_key"]
+    MONGO_USER = st.secrets["mongo"]["username"]
+    MONGO_PASSWORD = st.secrets["mongo"]["password"]
+    MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
+except Exception:
+    # Fallback to your hardcoded values if secrets file is missing (for safety)
+    MY_API_KEY = "AIzaSyCWeRY8cV44-V9cLrhj0oBi9KhKym7YvKk"
+    MONGO_USER = "Akashdip_Saha"
+    MONGO_PASSWORD = "STIL@12345"
+    MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
 
 # --- Database Connection Helper ---
-@st.cache_resource(ttl=600)  # Cache the client for 10 minutes
+@st.cache_resource(ttl=600)
 def get_mongo_connection():
     """Establishes and returns a MongoDB client and the user collection."""
     try:
@@ -48,6 +52,71 @@ def get_mongo_connection():
     except Exception as e:
         st.error(f"Failed to connect to MongoDB: {e}")
         return None
+
+# --- NEW FUNCTION: Send Email ---
+def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf"):
+    """
+    Sends the generated PDF via email using credentials from st.secrets.
+    Uses HTML formatting for a professional look.
+    """
+    try:
+        sender_email = st.secrets["email"]["sender_email"]
+        sender_password = st.secrets["email"]["sender_password"]
+        smtp_server = st.secrets["email"]["smtp_server"]
+        smtp_port = st.secrets["email"]["smtp_port"]
+    except Exception:
+        st.error("❌ Email secrets not configured! Check .streamlit/secrets.toml")
+        return False
+
+    # Current Date for Subject and Body
+    today_str = datetime.date.today().strftime("%d %B, %Y")
+
+    # Create Email Object
+    msg = MIMEMultipart()
+    msg['From'] = f"Jute OCR System <{sender_email}>" # Shows a nice name
+    msg['To'] = recipient_email
+    msg['Subject'] = f"📄 Daily Jute Sauda Report - {today_str}"
+    
+    # PROFESSIONAL HTML BODY
+    html_body = f"""
+    <html>
+      <body>
+        <p><strong>Dear Sir/Madam,</strong></p>
+        
+        <p>Please find attached the generated <strong>Jute Sauda OCR Report</strong> for today, {today_str}.</p>
+        
+        <hr style="border: 0; border-top: 1px solid #eee;">
+        <p style="font-size: 12px; color: #666;">
+        <em>Best Regards,<br>
+        <strong>Intelligent Jute OCR System</strong><br>
+        Automated Digital Processing Unit</em>
+        </p>
+      </body>
+    </html>
+    """
+    
+    # Attach HTML Body
+    msg.attach(MIMEText(html_body, 'html'))
+
+    # Attach PDF
+    part = MIMEBase('application', 'octet-stream')
+    part.set_payload(pdf_bytes)
+    encoders.encode_base64(part)
+    part.add_header('Content-Disposition', f"attachment; filename= {filename}")
+    msg.attach(part)
+
+    # Send Email
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        text = msg.as_string()
+        server.sendmail(sender_email, recipient_email, text)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Failed to send email: {e}")
+        return False
 
 # --- PDF Download & Auto-Save Function ---
 def save_and_log_download():
@@ -96,13 +165,6 @@ def save_and_log_download():
     except Exception as e:
         print(f"Auto-save failed: {e}")
         st.toast(f"Auto-save failed: {e}", icon="⚠️")
-
-# --- [COMMENTED OUT] User Authentication Functions ---
-# def verify_user(username, password):
-#     ... (Logic commented out) ...
-
-# def create_user(username, password):
-#     ... (Logic commented out) ...
 
 # --- Corporate CSS Theme ---
 corporate_css = """
@@ -367,8 +429,6 @@ if 'show_charts' not in st.session_state:
     st.session_state.show_charts = False
 
 # --- [PDF REPORT GENERATION] ---
-# [UPDATED] include_charts parameter; add Area column; white-text height calc; append charts as images
-# --- [PDF REPORT GENERATION] ---
 # [UPDATED] Added vertical rotation for chart labels
 def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, include_charts=False):
     """
@@ -556,7 +616,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 pdf.ln(5)
                 pdf.set_font("Arial", 'B', 12)
                 pdf.cell(95, 8, f"Page Date: {page_data.get('PAGE_DATE', 'N/A')}", 0, 0, 'L')
-                pdf.cell(95, 8, f"Opening Price: {page_data.get('OPENING_PRICE', 'N/A')}", 0, 1, 'R')
+                pdf.cell(95, 8, f"TD5 Base Price: {page_data.get('OPENING_PRICE', 'N/A')}", 0, 1, 'R')
                 pdf.ln(5)
 
                 pdf.set_font("Arial", 'B', 9)
@@ -731,7 +791,7 @@ def create_text_report(json_text):
             report_string += "=================================\n\n"
             try:
                 report_string += f"Page Date:\n  {data_dict.get('PAGE_DATE', 'N/A')}\n\n"
-                report_string += f"Opening Price:\n  {data_dict.get('OPENING_PRICE', 'N/A')}\n\n"
+                report_string += f"TD5 Base Price:\n  {data_dict.get('OPENING_PRICE', 'N/A')}\n\n"
                 if 'saudas' in data_dict and data_dict['saudas']:
                     df = pd.DataFrame(data_dict['saudas'])
                     sauda_list = df.to_dict(orient='records')
@@ -770,6 +830,7 @@ def get_json_from_image(image_bytes, api_key):
         model = genai.GenerativeModel('gemini-2.5-flash')
 
         # --- [NEW SAUDA PROMPT - V8 (With specific Area logic)] ---
+        # --- [NEW SAUDA PROMPT - V9 (Qtls/Bls Support + Unit Sum Check)] ---
         prompt_text = """
 You are a specialized Data Extraction Engine for handwritten "Jute Sauda" (deal) ledgers. Your ONLY task is to analyze an image of a ledger page and convert ALL entries on that page into a **single, structured JSON object**.
 
@@ -783,6 +844,58 @@ This is your single source of truth for names and locations. You MUST use this l
 * **NORTHERN (NR):** DINHATA, MAYNAGURI, BAXIRHAT, HUSLUDANGA, BASIRHAT, BELAKOBA, DHUPGURI, HALDIBari, BAMANHAT, TOOFANGANJ, MATHABHANGA, COOCHBEAR, CHOWDHURIHAT, DEWANHAT, BAROBISHA
 * **ODISHA (OD):** BHADRAK
 * **BANGLADESH (BD):** BANGLADESH
+
+AREA_GRP	AREA_GRP_DESC
+AS	ASSAM
+BD	BANGLADESH
+BR	BIHAR
+NR	NORTHERN
+OD	ODISHA
+SB	SOUTH BENGAL
+SN	SEMI NORTHERN
+
+**MAPPING TABLE:**
+* **AS (ASSAM):**
+    * AS001: FAKIRAGRAM, GOSSAIGAON, GUWAHATI, HOWLY, SARBHOG, TARABARI
+    * AS002: KHARUPETIA
+    * AS003: BILASIPARA, DHUBRI, GOURIPUR, SAPATGRAM
+    * AS004: BHURAGAON, DHINGBAZAR, MAIRABARI, NOWGAON, RAHA, UPARHALI
+* **BD (BANGLADESH):**
+    * BD001: BANGLADESH
+* **BR (BIHAR):**
+    * BR001: FORBESGANJ, GULABBAGH, KASBA, PURNEA, RAGHOPUR, SINGHESWAR STHAN
+    * BR002 (LOOSE): FORBESGANJ-L, PURNEA-L, TRIBENIGANJ-L
+    * BR003 (LOOSE): KISHANGANJ-L
+    * BR004: BARSOI, KISHANGANJ
+    * BR005: KISHANGANJ-J, MURLIGANJ
+    * BR006: KISHANGANJ-B
+    * BR007: KISHANGANJ-A
+* **NR (NORTHERN):**
+    * NR001: BERUBARI, BHETAGURI, BHOTPATTI, DAKGHARA, DHUPGURI, HALDIBARI, HUSLUDANGA, MATHABHANGA, MAYNAGURI, SILIGURI, TOOFANGANJ
+    * NR002: ALLIANCE (NR), BAMANHAT, CHANGRABANDHRA, CHOWDHURIHAT, GHUSKADANGA
+    * NR003: BELAKOBA
+    * NR004: COOCHBEHAR, DEWANHAT, DINHATA
+    * NR005: BAROBISHA, BAXIRHAT
+* **OD (ODISHA):**
+    * OD001: BHADRAK
+* **SB (SOUTH BENGAL):**
+    * SB001: AMTA, AMTALA, ANDULIA, ARANGHATA, ASSANAGAR, BADKULLA, BAGULA, BALAGARH, BANGALJHI, BARA ANDULIA, BEHRAMPUR, BELDANGA, BERACHAPA, BETAI, BETHUADAHARI, BHABTA, BHAGIRATHPUR, BHAGWANGOLA, BHIMPUR, BIRPUR, BONGAON, CHAKDAH, CHANDERNAGORE, CHANDGARH, CHANDPARA, CHAPRA, COSSIMBAZAR, DAINHAT, DAKSHINPAPA, DEBAGRAM, DEBNATHPUR, DHUBULIA, DOMKAL, DUTTAFULIA, GANGNAPUR, GAYESPUR, GOAS, GOPALNAGAR, HAJINAGAR, HANSKHALI, HANSPUKUR, HARINGHATA, ISLAMPUR-SB, JALANGI, JANGIPUR, JIAGANG, JIRAT, KALIGANJ, KALITALA, KALNA, KALYANI, KAMARHATTY, KANTALIA, KARIMPUR, KASHIPUR, KATWA, KAZISAHA, KINNISON (S/G), KRISHNANAGAR, LALBAGH, LOCHENPUR, MAJDIA, MARUTHIA, MAYAPUR, MOGRA, NABADWIP, NAGARUKRA, NAGERPUR, NAKURTALA, NATIAL, NAWPARA, NAZIRPUR, NILGANJ, NIMTALA, NOWDA, PAGLACHANDI, PALASIPARA, PALASSY, PATKIBARI, PATULI, PIRTALLA, PURBASTHALI, RADHANAGAR, RAJAPUR, RANAGHAT, REZINAGAR, RISHRA, SAGARPARA, SAHEBNAGAR, SANTIPUR, SARAGACHI, SERAMPORE, SHAIKHPARA, SHAKTIPUR, SIBPUR, SREERAMPORE(O), TARAPUR, TEHATTA, TENALIPARA, TRIMOHINI, VICTORIA S/G
+    * SB002: BADURIA, BASIRHAT, CHANDITALA, NALIKUL, SEORAPHULLY, SINGUR
+    * SB003: GOLABARI., HARIPAL, MOYNA., SEPAIGACHI., TARKESWAR.
+    * SB004: GOLABARI, HARIPAL, MOYNA, SEPAIGACHI, TARKESWAR
+    * SB005 (LOOSE): AMTALA-L, AMTALA_L, ANDULIA-L, ASSANNAGR-L, BALAGARH-L, BANGALJHI-L, BETHUADAHARI-L, BHIMPUR-L, BONGAON-L, BURDWAN-L, CHAPRA-L, COSSIMBAZAR-L, DAINHAT-L, DHUBULIA-L, HARINGHATA-L, ISLAMPUR-SB-L, JALANGI-L, KALITALA-L, KANTHALIA-L, KARIMPUR-L, KATHALIA-L, MAJDIA-L, NABADWIIP-L, NAZIRPUR-L, NILGANJ-L, PALASIPARA-L, PALSHIPARA-L, RANAGHAT-L, SAHEBNAGAR-L, TRIMOHINI-L
+    * SB006: DHULIYAN
+    * SB007: CHAPADANGA
+    * SB008 (HB): AMDANGA-HB, ASSANAGAR-HB, BANGALJHI-HB, BHIMPUR-HB, BONGAON-HB, CHAPRA-HB, COSSIMBAZAR-HB, HARINGHATA-HB, ISLAMPUR-HB, JALANGI-HB, KALITALA-HB, KARIMPUR-HB, MURUTHIA-HB, NABADWIP-HB, NAWPARA-HB, NAZIRPUR-HB, NILGANJ-HB, PALASIPARA-HB, RANAGHAT-HB, SAHEBNAGAR-HB, TARAPUR-HB, TEHATTA-HB
+* **SN (SEMI NORTHERN):**
+    * SN001: BARAHAR, BULBULCHANDI, HARISHCHPORE, KARIALI, MALDAH, RISHRA (SN), SAMSI, TULSIHATA
+    * SN002: DALKHOLA, KANKI, RAIGANJ, TUNNIDIGHI
+    * SN003: ISLAMPUR-SN, KALIYAGANJ, RAMGANJ, SONARPUR
+    * SN004: ISLAMPORE/SN, RAMGANJ/SN, SONARPUR/SN
+    * SN005 (Jute): HARISHCHPUR-J, RAIGANJ-J, SAMSI-J, SRIGHAR, TULSIHATA-J
+    * SN006 (LOOSE): DALKHOLA-L, FARAKKA-L, GAZOLE-L, HARISHCHPUR-L, ISLAMPUR-SN-L, KANKI-L, RAIGANJ-L, TULSIHATA-L, TUNIDIGHI-L
+    * SN007 (LOOSE): BALURGHAT-L, GANGARAMPUR-L
+    * SN008: BALURGHAT, RAMGANJ, SRIGHAR
 
 
 AREA_GRP	AREA_CODE	AREA_DESC
@@ -3347,6 +3460,7 @@ Broker Code	Broker
 20000055	MD. ABDUL KARIM
 20000065	BROTHERS ENTERPRISE
 
+
 **CRITICAL EXTRACTION RULES:**
 
 1.  **Page-Level Data:** First, find the main data for the *entire page*.
@@ -3369,8 +3483,12 @@ Broker Code	Broker
             * If `(Loose)` is written (e.g., `SB (Loose)`), `Bales_Mark` **MUST** be `"Loose"`.
             * If the mark is `SB` (and not loose), `Bales_Mark` **MUST** be `"loose"`.
             * If the mark is `BH`, `LA`, or any other text (and not loose), `Bales_Mark` **MUST** be `""` (an empty string).
-    * **No_of_Lorries:** The number *before* the "x" (e.g., "5x95" -> 5). Must be a **number**.
-    * **No_of_Bales:** The number *after* the "x" (e.g., "5x95" -> 95). Must be a **number**.
+    * **No_of_Lorries:** The number *before* the "x" (e.g., "5x95" or "2x105 Qtls" -> 2). Must be a **number**.
+    * **No_of_Bales:** The number *after* the "x" (e.g., "5x95", "2x105 Qtls", "2x105 Bls").
+        * **CRITICAL LOGIC:** You must include the unit ("Qtls" or "Bls").
+        * If it is written as "105 Qtls", output `"105 Qtls"`.
+        * If it is written as "105 Bls", output `"105 Bls"`.
+        * If it is written ONLY as number (e.g. "105") with no unit, you MUST append "Bls". Output `"105 Bls"`.
     * **Grades:** The grade numbers (e.g., "5/6", "4/5/6/SD").
         * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of strings**.
         * "4/5/6" -> `["TD4", "TD5", "TD6"]`
@@ -3381,11 +3499,10 @@ Broker Code	Broker
         * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of numbers**.
         * "10400/10100" -> `[10400, 10100]`
         * "9800/9600/9750" -> `[9800, 9600, 9750]`
-    * **Unit:** The mill codes (e.g., "SHM", "GJM", "SKT") AND the numbers written below them which make sure that the total of all the lorries doesn't exceed the number of lorry(s).
-        * **CRITICAL LOGIC:** Combine them into a single string.
-        * If "SHM" has "3" under it -> `"SHM - 3"`
-        * If "GJM" has "2" under it -> `"GJM - 2"`
-        * If "SHM" has "2" and "SKT" has "3" -> `"SHM - 2, SKT - 3"`
+    * **Unit:** The mill codes (e.g., "IJM" "SHM", "GJM", "SKT") AND the numbers written below them.
+        * **CRITICAL LOGIC:** Combine them into a single string (e.g., "IJM - 5, SKT - 2, HJM - 3").
+        * **SUMMATION RULE:** The numbers assigned to each mill MUST sum up to exactly the `No_of_Lorries`.
+        * Example: If `No_of_Lorries` is 10, then `IJM - 5, SKT - 2, HJM - 3` is valid because 5+2+3 = 10.
 
 **CRITICAL OUTPUT FORMAT (EXAMPLE):**
 Your output MUST be a **single JSON object** (`{}`). Do not include *any* introductory text, explanations, or markdown formatting (like ```json). Your entire response must be the JSON object itself.
@@ -3400,10 +3517,10 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Mukkam": "KRISHNANAGAR",
       "Bales_Mark": "loose",
       "No_of_Lorries": 3,
-      "No_of_Bales": 80,
+      "No_of_Bales": "80 Bls",
       "Grades": ["TD5", "TD6", "TD5D"],
       "Rates": [9800, 9600, 9750],
-      "Unit": "SHM - 1, MIJM - 2"
+      "Unit": "SHM - 1, IJM - 2"
     },
     {
       "Broker": "Rakesh Ghoshal",
@@ -3411,7 +3528,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Mukkam": "PURNEA",
       "Bales_Mark": "",
       "No_of_Lorries": 2,
-      "No_of_Bales": 82,
+      "No_of_Bales": "105 Qtls",
       "Grades": ["TD6", "TD7"],
       "Rates": [10000, 9700],
       "Unit": "GJM - 2"
@@ -3422,7 +3539,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Mukkam": "SINGUR",
       "Bales_Mark": "",
       "No_of_Lorries": 5,
-      "No_of_Bales": 95,
+      "No_of_Bales": "95 Bls",
       "Grades": ["TD5", "TD6"],
       "Rates": [10400, 10100],
       "Unit": "SHM - 2, SKT - 3"
@@ -3433,7 +3550,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Mukkam": "TARABARI",
       "Bales_Mark": "Loose",
       "No_of_Lorries": 1,
-      "No_of_Bales": 80,
+      "No_of_Bales": "80 Bls",
       "Grades": ["TD4", "TD5", "TD6"],
       "Rates": [10400, 9750, 9550],
       "Unit": "SHM - 1"
@@ -3581,7 +3698,7 @@ if True:  # Replaced with if True to enable main app directly
                 1.  **Provide Sauda Ledger Image(s):** Upload one or more files (JPG, PNG, PDF).
                 2.  **Take a Picture:** (Local Only) Use the 'Take aPicture' tab to snap a photo.
                 3.  **Extract Data:** Click the 'Extract Data' button. The AI will process all files.
-                4.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, Opening Price, and all Sauda entries.
+                4.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, TD5 Base Price, and all Sauda entries.
                 5.  **Download:** Click 'Download as PDF' to download the report AND automatically save data to the database.
                 6.  **Reset:** Click "Reset Process" to start over.
             """)
@@ -3761,7 +3878,7 @@ if True:  # Replaced with if True to enable main app directly
                     )
                 with header_cols[1]:
                     current_document['OPENING_PRICE'] = st.text_input(
-                        "Opening Price (op-)",
+                        "TD5 Base: ",
                         value=current_document.get('OPENING_PRICE', ''),
                         key=f"OPENING_PRICE_{current_index}"
                     )
@@ -3818,8 +3935,8 @@ if True:  # Replaced with if True to enable main app directly
 
                 st.divider()
 
-                # --- Download Section ---
-                st.subheader("Download All Extracted Documents")
+                # --- Download & Email Section ---
+                st.subheader("Step 3: Export Options")
 
                 # Re-serialize data
                 try:
@@ -3842,30 +3959,54 @@ if True:  # Replaced with if True to enable main app directly
 
                 st.write("")
 
-                dl_cols = st.columns(3)
-                with dl_cols[0]:
-                    # (JSON download removed as per earlier)
-                    st.write("")
-                with dl_cols[1]:
-                    if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts:
-                        st.warning("Please select at least one section to include in the PDF.")
-                        st.button("⬇️ Download as PDF", use_container_width=True, disabled=True)
-                    else:
-                        pdf_data = create_pdf(
-                            full_edited_json_text,
-                            dl_area_summary,
-                            dl_broker_summary,
-                            dl_sauda_details,
-                            include_charts=include_charts  # [UPDATED]
-                        )
+                # Generate PDF once for both buttons
+                if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts:
+                    st.warning("Please select at least one section to include in the PDF.")
+                    pdf_data = None
+                else:
+                    pdf_data = create_pdf(
+                        full_edited_json_text,
+                        dl_area_summary,
+                        dl_broker_summary,
+                        dl_sauda_details,
+                        include_charts=include_charts
+                    )
+
+                # Layout for Download and Email
+                col_download, col_email = st.columns([1, 1])
+
+                # 1. Download Button
+                with col_download:
+                    if pdf_data:
                         st.download_button(
-                            label="⬇️ Download as PDF (Auto-Saves to DB)",
+                            label="⬇️ Download as PDF",
                             data=pdf_data,
                             file_name=f"sauda_export_batch_{datetime.date.today().strftime('%Y-%m-%d')}.pdf",
                             mime="application/pdf",
                             use_container_width=True,
                             on_click=save_and_log_download
                         )
-                with dl_cols[2]:
-                    # (TXT download removed as before)
-                    st.write("")
+                    else:
+                        st.button("⬇️ Download as PDF", disabled=True, use_container_width=True)
+
+                # 2. Email Feature
+                with col_email:
+                    with st.popover("📧 Email Report", use_container_width=True):
+                        st.write("Send this report via email.")
+                        email_recipient = st.text_input("Recipient Email", placeholder="manager@example.com")
+                        if st.button("Send Email Now", type="primary"):
+                            if not pdf_data:
+                                st.error("PDF generation failed. Cannot send.")
+                            elif not email_recipient:
+                                st.warning("Please enter an email address.")
+                            else:
+                                with st.spinner("Sending email..."):
+                                    success = send_email_with_pdf(
+                                        email_recipient, 
+                                        pdf_data, 
+                                        filename=f"Sauda_Report_{datetime.date.today()}.pdf"
+                                    )
+                                    if success:
+                                        st.success(f"✅ Report sent to {email_recipient}!")
+                                        # Optionally log email event here if desired
+                
