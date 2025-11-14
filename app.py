@@ -170,12 +170,12 @@ def save_and_log_download():
 corporate_css = """
 <style>
 :root {
-    --color-primary: #016B61;      /* Dark Teal */
-    --color-accent: #70B2B2;       /* Medium Teal */
+    --color-primary: #016B61;       /* Dark Teal */
+    --color-accent: #70B2B2;        /* Medium Teal */
     --color-light-accent: #9ECFD4; /* Light Teal */
-    --color-highlight: #E5E9C5;    /* Pale Green-Yellow */
-    --color-bg: #F8F9F0;           /* Very Light version of highlight */
-    --color-dark: #003B36;         /* Very Dark Teal for Text */
+    --color-highlight: #E5E9C5;     /* Pale Green-Yellow */
+    --color-bg: #F8F9F0;            /* Very Light version of highlight */
+    --color-dark: #003B36;          /* Very Dark Teal for Text */
     --radius: 12px;
     --shadow: 0 4px 14px rgba(0,0,0,0.06);
     --shadow-hover: 0 8px 24px rgba(112,178,178,0.35); /* From --color-accent */
@@ -394,6 +394,30 @@ body[data-layout="centered"] .stRadio [data-baseweb="radio"][data-checked="true"
     font-weight: 600;
     box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
+
+/* --- MOBILE SPECIFIC ADJUSTMENTS --- */
+@media only screen and (max-width: 600px) {
+    /* Adjust headings size */
+    h1 { font-size: 1.8rem !important; }
+    h2 { font-size: 1.4rem !important; }
+    
+    /* Remove heavy padding from containers to use full width */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 8px !important;
+        margin-bottom: 10px !important;
+    }
+    
+    /* Ensure buttons wrap properly */
+    [data-testid="stButton"] button {
+        width: 100% !important;
+        margin-bottom: 5px;
+    }
+    
+    /* Adjust table font size if used */
+    [data-testid="stDataFrame"] {
+        font-size: 12px;
+    }
+}
 </style>
 """
 
@@ -603,7 +627,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
         if dl_sauda_details:
             col_widths = {
                 "Broker": 36, "Area": 22, "Mukkam": 22, "Bales_Mark": 18,   
-                "No_of_Lorries": 14, "No_of_Bales": 14, "Grades": 24, "Rates": 24, "Unit": 16          
+                "No_of_Lorries": 14, "No_of_Bales": 14, "Grades": 24, "Rates": 24, "Unit": 16           
             }
             headers = ["Broker", "Area", "Mukkam", "Bales Mark", "Lorries", "Bales", "Grades", "Rates", "Unit"]
             header_keys = ["Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit"]
@@ -896,6 +920,286 @@ SN	SEMI NORTHERN
     * SN006 (LOOSE): DALKHOLA-L, FARAKKA-L, GAZOLE-L, HARISHCHPUR-L, ISLAMPUR-SN-L, KANKI-L, RAIGANJ-L, TULSIHATA-L, TUNIDIGHI-L
     * SN007 (LOOSE): BALURGHAT-L, GANGARAMPUR-L
     * SN008: BALURGHAT, RAMGANJ, SRIGHAR
+
+
+AREA_GRP	AREA_GRP_DESC
+AS	ASSAM
+BD	BANGLADESH
+BR	BIHAR
+NR	NORTHERN
+OD	ODISHA
+SB	SOUTH BENGAL
+SN	SEMI NORTHERN
+
+AREA_GRP	AREA_CODE	MUKAM_DESC
+AS	AS001	FAKIRAGRAM
+AS	AS001	GOSSAIGAON
+AS	AS001	GUWAHATI
+AS	AS001	HOWLY
+AS	AS001	SARBHOG
+AS	AS001	TARABARI
+AS	AS002	KHARUPETIA
+AS	AS003	BILASIPARA
+AS	AS003	DHUBRI
+AS	AS003	GOURIPUR
+AS	AS003	SAPATGRAM
+AS	AS004	BHURAGAON
+AS	AS004	DHINGBAZAR
+AS	AS004	GOSSAIGAON
+AS	AS004	MAIRABARI
+AS	AS004	NOWGAON
+AS	AS004	RAHA
+AS	AS004	UPARHALI
+BD	BD001	BANGLADESH
+BR	BR001	FORBESGANJ
+BR	BR001	GULABBAGH
+BR	BR001	KASBA
+BR	BR001	PURNEA
+BR	BR001	RAGHOPUR
+BR	BR001	SINGHESWAR STHAN
+BR	BR002	FORBESGANJ-L
+BR	BR002	PURNEA-L
+BR	BR002	TRIBENIGANJ-L
+BR	BR003	KISHANGANJ-L
+BR	BR004	BARSOI
+BR	BR004	KISHANGANJ
+BR	BR005	KISHANGANJ-J
+BR	BR005	MURLIGANJ
+BR	BR006	KISHANGANJ-B
+BR	BR007	KISHANGANJ-A
+NR	NR001	BERUBARI
+NR	NR001	BHETAGURI
+NR	NR001	BHOTPATTI
+NR	NR001	DAKGHARA
+NR	NR001	DHUPGURI
+NR	NR001	HALDIBARI
+NR	NR001	HUSLUDANGA
+NR	NR001	MATHABHANGA
+NR	NR001	MAYNAGURI
+NR	NR001	SILIGURI
+NR	NR001	TOOFANGANJ
+NR	NR002	ALLIANCE (NR)
+NR	NR002	BAMANHAT
+NR	NR002	CHANGRABANDHRA
+NR	NR002	CHOWDHURIHAT
+NR	NR002	GHUSKADANGA
+NR	NR003	BELAKOBA
+NR	NR004	COOCHBEHAR
+NR	NR004	DEWANHAT
+NR	NR004	DINHATA
+NR	NR005	BAROBISHA
+NR	NR005	BAXIRHAT
+OD	OD001	BHADRAK
+SB	SB001	AMTA
+SB	SB001	AMTALA
+SB	SB001	ANDULIA
+SB	SB001	ARANGHATA
+SB	SB001	ASSANAGAR
+SB	SB001	BADKULLA
+SB	SB001	BAGULA
+SB	SB001	BALAGARH
+SB	SB001	BANGALJHI
+SB	SB001	BARA ANDULIA
+SB	SB001	BEHRAMPUR
+SB	SB001	BELDANGA
+SB	SB001	BERACHAPA
+SB	SB001	BETAI
+SB	SB001	BETHUADAHARI
+SB	SB001	BHABTA
+SB	SB001	BHAGIRATHPUR
+SB	SB001	BHAGWANGOLA
+SB	SB001	BHIMPUR
+SB	SB001	BIRPUR
+SB	SB001	BONGAON
+SB	SB001	CHAKDAH
+SB	SB001	CHANDERNAGORE
+SB	SB001	CHANDGARH
+SB	SB001	CHANDPARA
+SB	SB001	CHAPRA
+SB	SB001	COSSIMBAZAR
+SB	SB001	DAINHAT
+SB	SB001	DAKSHINPAPA
+SB	SB001	DEBAGRAM
+SB	SB001	DEBNATHPUR
+SB	SB001	DHUBULIA
+SB	SB001	DOMKAL
+SB	SB001	DUTTAFULIA
+SB	SB001	GANGNAPUR
+SB	SB001	GAYESPUR
+SB	SB001	GOAS
+SB	SB001	GOPALNAGAR
+SB	SB001	HAJINAGAR
+SB	SB001	HANSKHALI
+SB	SB001	HANSPUKUR
+SB	SB001	HARINGHATA
+SB	SB001	ISLAMPUR-SB
+SB	SB001	JALANGI
+SB	SB001	JANGIPUR
+SB	SB001	JIAGANG
+SB	SB001	JIRAT
+SB	SB001	KALIGANJ
+SB	SB001	KALITALA
+SB	SB001	KALNA
+SB	SB001	KALYANI
+SB	SB001	KAMARHATTY
+SB	SB001	KANTALIA
+SB	SB001	KARIMPUR
+SB	SB001	KASHIPUR
+SB	SB001	KATWA
+SB	SB001	KAZISAHA
+SB	SB001	KINNISON (S/G)
+SB	SB001	KRISHNANAGAR
+SB	SB001	LALBAGH
+SB	SB001	LOCHENPUR
+SB	SB001	MAJDIA
+SB	SB001	MARUTHIA
+SB	SB001	MAYAPUR
+SB	SB001	MOGRA
+SB	SB001	NABADWIP
+SB	SB001	NAGARUKRA
+SB	SB001	NAGERPUR
+SB	SB001	NAKURTALA
+SB	SB001	NATIAL
+SB	SB001	NAWPARA
+SB	SB001	NAZIRPUR
+SB	SB001	NILGANJ
+SB	SB001	NIMTALA
+SB	SB001	NOWDA
+SB	SB001	PAGLACHANDI
+SB	SB001	PALASIPARA
+SB	SB001	PALASSY
+SB	SB001	PATKIBARI
+SB	SB001	PATULI
+SB	SB001	PIRTALLA
+SB	SB001	PURBASTHALI
+SB	SB001	RADHANAGAR
+SB	SB001	RAJAPUR
+SB	SB001	RANAGHAT
+SB	SB001	REZINAGAR
+SB	SB001	RISHRA
+SB	SB001	SAGARPARA
+SB	SB001	SAHEBNAGAR
+SB	SB001	SANTIPUR
+SB	SB001	SARAGACHI
+SB	SB001	SERAMPORE
+SB	SB001	SHAIKHPARA
+SB	SB001	SHAKTIPUR
+SB	SB001	SIBPUR
+SB	SB001	SREERAMPORE(O)
+SB	SB001	TARAPUR
+SB	SB001	TEHATTA
+SB	SB001	TENALIPARA
+SB	SB001	TRIMOHINI
+SB	SB001	VICTORIA S/G
+SB	SB002	BADURIA
+SB	SB002	BASIRHAT
+SB	SB002	CHANDITALA
+SB	SB002	NALIKUL
+SB	SB002	SEORAPHULLY
+SB	SB002	SINGUR
+SB	SB003	GOLABARI.
+SB	SB003	HARIPAL
+SB	SB003	MOYNA.
+SB	SB003	SEPAIGACHI.
+SB	SB003	TARKESWAR.
+SB	SB004	GOLABARI
+SB	SB004	HARIPAL.
+SB	SB004	MOYNA
+SB	SB004	SEPAIGACHI
+SB	SB004	TARKESWAR
+SB	SB005	AMTALA-L
+SB	SB005	AMTALA_L
+SB	SB005	ANDULIA-L
+SB	SB005	ASSANNAGR-L
+SB	SB005	BALAGARH-L
+SB	SB005	BANGALJHI-L
+SB	SB005	BETHUADAHARI-L
+SB	SB005	BHIMPUR-L
+SB	SB005	BONGAON-L
+SB	SB005	BURDWAN-L
+SB	SB005	CHAPRA-L
+SB	SB005	COSSIMBAZAR-L
+SB	SB005	DAINHAT-L
+SB	SB005	DHUBULIA-L
+SB	SB005	HARINGHATA-L
+SB	SB005	ISLAMPUR-SB-L
+SB	SB005	JALANGI-L
+SB	SB005	KALITALA-L
+SB	SB005	KANTHALIA-L
+SB	SB005	KARIMPUR-L
+SB	SB005	KATHALIA-L
+SB	SB005	MAJDIA-L
+SB	SB005	NABADWIIP-L
+SB	SB005	NAZIRPUR-L
+SB	SB005	NILGANJ-L
+SB	SB005	PALASIPARA-L
+SB	SB005	PALSHIPARA-L
+SB	SB005	RANAGHAT-L
+SB	SB005	SAHEBNAGAR-L
+SB	SB005	TRIMOHINI-L
+SB	SB006	DHULIYAN
+SB	SB007	CHAPADANGA
+SB	SB008	AMDANGA-HB
+SB	SB008	ASSANAGAR-HB
+SB	SB008	BANGALJHI-HB
+SB	SB008	BHIMPUR-HB
+SB	SB008	BONGAON-HB
+SB	SB008	CHAPRA-HB
+SB	SB008	COSSIMBAZAR-HB
+SB	SB008	DO NOT USE
+SB	SB008	HARINGHATA-HB
+SB	SB008	ISLAMPUR-HB
+SB	SB008	JALANGI-HB
+SB	SB008	KALITALA-HB
+SB	SB008	KARIMPUR-HB
+SB	SB008	MURUTHIA-HB
+SB	SB008	NABADWIP-HB
+SB	SB008	NAWPARA-HB
+SB	SB008	NAZIRPUR-HB
+SB	SB008	NILGANJ-HB
+SB	SB008	PALASIPARA-HB
+SB	SB008	RANAGHAT-HB
+SB	SB008	SAHEBNAGAR-HB
+SB	SB008	TARAPUR-HB
+SB	SB008	TEHATTA-HB
+SN	SN001	BARAHAR
+SN	SN001	BULBULCHANDI
+SN	SN001	HARISHCHPORE
+SN	SN001	KARIALI
+SN	SN001	MALDAH
+SN	SN001	RISHRA (SN)
+SN	SN001	SAMSI
+SN	SN001	TULSIHATA
+SN	SN002	DALKHOLA
+SN	SN002	KANKI
+SN	SN002	RAIGANJ
+SN	SN002	TUNNIDIGHI
+SN	SN003	ISLAMPUR-SN
+SN	SN003	KALIYAGANJ
+SN	SN003	RAMGANJ
+SN	SN003	SONARPUR
+SN	SN004	ISLAMPORE/SN
+SN	SN004	RAMGANJ/SN
+SN	SN004	SONARPUR/SN
+SN	SN005	HARISHCHPUR-J
+SN	SN005	RAIGANJ-J
+SN	SN005	SAMSI-J
+SN	SN005	SRIGHAR
+SN	SN005	TULSIHATA-J
+SN	SN006	DALKHOLA-L
+SN	SN006	FARAKKA-L
+SN	SN006	GAZOLE-L
+SN	SN006	HARISHCHPUR-L
+SN	SN006	ISLAMPUR-SN-L
+SN	SN006	KANKI-L
+SN	SN006	RAIGANJ-L
+SN	SN006	TULSIHATA-L
+SN	SN006	TUNIDIGHI-L
+SN	SN007	BALURGHAT-L
+SN	SN007	GANGARAMPUR-L
+SN	SN008	BALURGHAT
+SN	SN008	RAMGANJ
+SN	SN008	SRIGHAR
 
 
 AREA_GRP	AREA_CODE	AREA_DESC
@@ -3485,7 +3789,7 @@ Broker Code	Broker
             * If the mark is `BH`, `LA`, or any other text (and not loose), `Bales_Mark` **MUST** be `""` (an empty string).
     * **No_of_Lorries:** The number *before* the "x" (e.g., "5x95" or "2x105 Qtls" -> 2). Must be a **number**.
     * **No_of_Bales:** The number *after* the "x" (e.g., "5x95", "2x105 Qtls", "2x105 Bls").
-        * **CRITICAL LOGIC:** You must include the unit ("Qtls" or "Bls").
+        * **CRITICAL LOGIC:** You must include the unit ("Qtls" or "Bls" nothing else).
         * If it is written as "105 Qtls", output `"105 Qtls"`.
         * If it is written as "105 Bls", output `"105 Bls"`.
         * If it is written ONLY as number (e.g. "105") with no unit, you MUST append "Bls". Output `"105 Bls"`.
@@ -3895,24 +4199,52 @@ if True:  # Replaced with if True to enable main app directly
 
                 st.write("---")
                 st.subheader("Sauda Entries")
-                current_document['saudas'] = st.data_editor(
-                    current_document['saudas'],
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key=f"data_editor_{current_index}",
-                    column_config={
-                        "Broker": st.column_config.TextColumn("Broker", required=True),
-                        "Area": st.column_config.TextColumn("Area"),
-                        "Mukkam": st.column_config.TextColumn("Mukkam"),
-                        "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
-                        "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
-                        "No_of_Bales": st.column_config.NumberColumn("No. of Bales (per lorry)"),
-                        "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
-                        "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
-                        "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
-                    },
-                    column_order=("Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
-                )
+
+                # --- MOBILE FRIENDLY TOGGLE ---
+                is_mobile_mode = st.toggle("📱 Mobile Edit Mode", value=False, help="Switch to this mode to edit easily on phones without horizontal scrolling.")
+
+                if is_mobile_mode:
+                    st.info("📝 Mobile Mode Active: Entries are shown as cards below.")
+                    for i, sauda in enumerate(current_document['saudas']):
+                        with st.expander(f"Entry #{i+1} - {sauda.get('Broker', 'Unknown')}", expanded=False):
+                            # Use regular inputs stacked for mobile
+                            c1, c2 = st.columns(2)
+                            current_document['saudas'][i]['Broker'] = c1.text_input("Broker", sauda.get('Broker', ''), key=f"m_brk_{current_index}_{i}")
+                            current_document['saudas'][i]['Area'] = c2.text_input("Area", sauda.get('Area', ''), key=f"m_area_{current_index}_{i}")
+                            
+                            c3, c4 = st.columns(2)
+                            current_document['saudas'][i]['Mukkam'] = c3.text_input("Mukkam", sauda.get('Mukkam', ''), key=f"m_muk_{current_index}_{i}")
+                            current_document['saudas'][i]['Bales_Mark'] = c4.text_input("Bales Mark", sauda.get('Bales_Mark', ''), key=f"m_bm_{current_index}_{i}")
+                            
+                            c5, c6 = st.columns(2)
+                            current_document['saudas'][i]['No_of_Lorries'] = c5.number_input("Lorries", value=int(sauda.get('No_of_Lorries', 0)), key=f"m_lor_{current_index}_{i}")
+                            # Bales is text in your logic (e.g., "105 Bls")
+                            current_document['saudas'][i]['No_of_Bales'] = c6.text_input("Bales", str(sauda.get('No_of_Bales', '')), key=f"m_bal_{current_index}_{i}")
+
+                            current_document['saudas'][i]['Grades'] = st.text_input("Grades (comma sep)", sauda.get('Grades', ''), key=f"m_grd_{current_index}_{i}")
+                            current_document['saudas'][i]['Rates'] = st.text_input("Rates (comma sep)", sauda.get('Rates', ''), key=f"m_rts_{current_index}_{i}")
+                            current_document['saudas'][i]['Unit'] = st.text_input("Unit", sauda.get('Unit', ''), key=f"m_unt_{current_index}_{i}")
+
+                else:
+                    # DEFAULT TABLE VIEW (Desktop)
+                    current_document['saudas'] = st.data_editor(
+                        current_document['saudas'],
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        key=f"data_editor_{current_index}",
+                        column_config={
+                            "Broker": st.column_config.TextColumn("Broker", required=True),
+                            "Area": st.column_config.TextColumn("Area"),
+                            "Mukkam": st.column_config.TextColumn("Mukkam"),
+                            "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
+                            "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
+                            "No_of_Bales": st.column_config.TextColumn("No. of Bales"), # Changed to text per your logic
+                            "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
+                            "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
+                            "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
+                        },
+                        column_order=("Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
+                    )
 
                 st.write("---")
                 col1, col2, col3 = st.columns([1, 2, 1])
@@ -4009,4 +4341,3 @@ if True:  # Replaced with if True to enable main app directly
                                     if success:
                                         st.success(f"✅ Report sent to {email_recipient}!")
                                         # Optionally log email event here if desired
-                
