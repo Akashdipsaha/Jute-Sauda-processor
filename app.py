@@ -48,11 +48,6 @@ except Exception:
     MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
 
 
-# --- FIX: Check for critical secrets and stop if missing ---
-if not MY_API_KEY or not MONGO_USER or not SENDER_EMAIL:
-    st.error("🚨 Critical secrets are missing. The app cannot continue.")
-    st.info("Please ensure your `.streamlit/secrets.toml` file is correct and has [general], [mongo], and [email] sections.")
-    st.stop() # Stop all further execution
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
@@ -4675,5 +4670,3 @@ if True:  # Replaced with if True to enable main app directly
             #             )
             #         else:
             #             st.button("Open WhatsApp Chat", disabled=True, use_container_width=True)
-
-
