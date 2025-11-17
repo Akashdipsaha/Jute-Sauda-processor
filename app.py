@@ -30,18 +30,24 @@ try:
     MONGO_USER = st.secrets["mongo"]["username"]
     MONGO_PASSWORD = st.secrets["mongo"]["password"]
     MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
-except Exception:
-    # Fallback to your hardcoded values if secrets file is missing (for safety)
-    MY_API_KEY = "AIzaSyCWeRY8cV44-V9cLrhj0oBi9KhKym7YvKk"
-    MONGO_USER = "Akashdip_Saha"
-    MONGO_PASSWORD = "STIL@12345"
-    MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
+except Exception as e:
+    # Fallback if secrets file is missing (HARDCODED VALUES REMOVED)
+    st.error(f"⚠️ Secrets not found! Please check your .streamlit/secrets.toml file. Error: {e}")
+    MY_API_KEY = None
+    MONGO_USER = None
+    MONGO_PASSWORD = None
+    MONGO_CLUSTER_URL = None
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
 def get_mongo_connection():
     """Establishes and returns a MongoDB client and the user collection."""
     try:
+        # Check if secrets were loaded
+        if not MONGO_USER or not MONGO_PASSWORD or not MONGO_CLUSTER_URL:
+            st.error("MongoDB secrets are not loaded. Cannot connect.")
+            return None
+            
         escaped_user = quote_plus(MONGO_USER)
         escaped_pass = quote_plus(MONGO_PASSWORD)
         connection_string = f"mongodb+srv://{escaped_user}:{escaped_pass}@{MONGO_CLUSTER_URL}"
@@ -52,6 +58,17 @@ def get_mongo_connection():
     except Exception as e:
         st.error(f"Failed to connect to MongoDB: {e}")
         return None
+
+# --- [NEW] Helper to get IST Time ---
+def get_ist_time():
+    """Returns a datetime object for the current time in IST."""
+    try:
+        ist_tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+        return datetime.datetime.now(ist_tz)
+    except Exception:
+        # Fallback if timezone fails
+        return datetime.datetime.now()
+
 
 # --- NEW FUNCTION: Send Email ---
 def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf"):
@@ -68,14 +85,16 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
         st.error("❌ Email secrets not configured! Check .streamlit/secrets.toml")
         return False
 
-    # Current Date for Subject and Body
-    today_str = datetime.date.today().strftime("%d %B, %Y")
+    # --- UPDATED: Use IST Time helper ---
+    now_ist = get_ist_time()
+    today_str = now_ist.strftime("%d %B, %Y")
+    subject_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
 
     # Create Email Object
     msg = MIMEMultipart()
     msg['From'] = f"Jute OCR System <{sender_email}>" # Shows a nice name
     msg['To'] = recipient_email
-    msg['Subject'] = f"📄 Daily Jute Sauda Report - {today_str}"
+    msg['Subject'] = f"📄 Daily Jute Sauda Report - {subject_str}"
     
     # PROFESSIONAL HTML BODY
     html_body = f"""
@@ -130,13 +149,17 @@ def save_and_log_download():
         if users_col is not None:
             db = users_col.database
             logs_col = db["download_logs"] # New collection for logs
-            now = datetime.datetime.now(datetime.timezone.utc)
+            
+            # --- UPDATED: Use IST Time helper ---
+            now_ist = get_ist_time()
+            now_utc = now_ist.astimezone(datetime.timezone.utc)
+
             log_entry = {
                 "event": "PDF Download",
                 "username": st.session_state.get("username", "Unknown"),
-                "timestamp": now,
-                "download_date": now.strftime("%Y-%m-%d"), # Separate Date
-                "download_time": now.strftime("%H:%M:%S UTC"), # Separate Time
+                "timestamp_utc": now_utc,
+                "download_date_ist": now_ist.strftime("%Y-%m-%d"), # Separate Date
+                "download_time_ist": now_ist.strftime("%H:%M:%S IST"), # Separate Time
                 "details": "User downloaded the Sauda Report PDF"
             }
             logs_col.insert_one(log_entry)
@@ -153,10 +176,15 @@ def save_and_log_download():
                 data_col = db["sauda_data"] # Collection for the actual data
                 # Prepare batch with metadata
                 batch_data = []
-                now = datetime.datetime.now(datetime.timezone.utc)
+                
+                # --- UPDATED: Use IST Time helper ---
+                now_ist = get_ist_time()
+                now_utc = now_ist.astimezone(datetime.timezone.utc)
+
                 for doc in st.session_state.result_list:
                     doc_copy = doc.copy()
-                    doc_copy['uploaded_at'] = now
+                    doc_copy['uploaded_at_utc'] = now_utc
+                    doc_copy['uploaded_at_ist'] = now_ist.isoformat()
                     doc_copy['uploaded_by'] = st.session_state.get("username", "Unknown")
                     batch_data.append(doc_copy)
                 data_col.insert_many(batch_data)
@@ -170,12 +198,12 @@ def save_and_log_download():
 corporate_css = """
 <style>
 :root {
-    --color-primary: #016B61;       /* Dark Teal */
-    --color-accent: #70B2B2;        /* Medium Teal */
+    --color-primary: #016B61;        /* Dark Teal */
+    --color-accent: #70B2B2;         /* Medium Teal */
     --color-light-accent: #9ECFD4; /* Light Teal */
     --color-highlight: #E5E9C5;     /* Pale Green-Yellow */
-    --color-bg: #F8F9F0;            /* Very Light version of highlight */
-    --color-dark: #003B36;          /* Very Dark Teal for Text */
+    --color-bg: #F8F9F0;             /* Very Light version of highlight */
+    --color-dark: #003B36;           /* Very Dark Teal for Text */
     --radius: 12px;
     --shadow: 0 4px 14px rgba(0,0,0,0.06);
     --shadow-hover: 0 8px 24px rgba(112,178,178,0.35); /* From --color-accent */
@@ -451,10 +479,13 @@ if 'row_to_delete_input' not in st.session_state:
 # NOTE: show_charts no longer used in UI per requirement.
 if 'show_charts' not in st.session_state:
     st.session_state.show_charts = False
+# NEW: Session state for WhatsApp number
+if 'whatsapp_recipient' not in st.session_state:
+    st.session_state.whatsapp_recipient = "+91" # Default to India country code
 
 # --- [PDF REPORT GENERATION] ---
-# [UPDATED] Added vertical rotation for chart labels
-def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, include_charts=False):
+# [UPDATED] Reverted Sauda Details to one table per page, kept Base Price summaries
+def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, dl_unit_summary=False, include_charts=False):
     """
     Creates a structured, multi-page PDF report from a JSON string.
     Uses standard FPDF methods to ensure compatibility and robust tables.
@@ -463,13 +494,42 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
 
     class PDF(FPDF):
         def header(self):
-            pass
-        def footer(self):
-            if dl_sauda_details and self.page_no() > 1:
-                self.set_y(-15)
-                self.set_font('Arial', '', 8)
+            # --- UPDATED: Main Title and Timestamp Header ---
+            if self.page_no() == 1: 
+                # --- On PAGE 1: Show the large, centered header ---
+                # 1. Main Title
+                self.set_font('Arial', 'B', 18)
+                self.set_text_color(0, 0, 0) # Black
+                self.cell(0, 10, "Sauda Report", 0, 1, 'C') # Centered, new line
+                
+                # 2. Timestamp
+                now_ist = get_ist_time()
+                today_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
+                self.set_font('Arial', 'B', 14)
+                self.set_text_color(0, 0, 0) # Black
+                self.cell(0, 10, today_str, 0, 1, 'C') # Centered, new line
+
+                # Add padding after header
+                self.ln(10)
+            
+            elif self.page_no() > 1:
+                # --- On ALL OTHER PAGES: Show a smaller, standard header ---
+                self.set_font('Arial', 'I', 9)
                 self.set_text_color(128)
-                self.cell(0, 10, f'Page {self.page_no() - 1}', 0, 0, 'C')
+                now_ist = get_ist_time()
+                today_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
+                # Position date to the left
+                self.cell(0, 10, f"Report Date: {today_str}", 0, 0, 'L')
+                self.ln(10) # Add padding after header
+
+
+        def footer(self):
+            # --- NEW: Page Number ONLY in footer ---
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.set_text_color(128)
+            # Position page number to the right
+            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'R')
 
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -494,11 +554,17 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
             data_list = [data_list]
 
         # --- Part 1: Generate Summary Data ---
-        area_summary = {}
-        broker_summary = {}
-        total_lorries = 0
+        # --- Data structure segregated by Base Price ---
+        area_summary = {}     # {"Base_Price": {"Area": count}}
+        broker_summary = {}   # {"Base_Price": {"Broker": {"total_lorries": count, "area_breakdown": {"Area": count}}}}
+        unit_summary = {}     # {"Base_Price": {"Unit": {"Area": count}}}
+        base_price_summary = {}     # {"Base_Price": count}
+        
+        grand_total_lorries = 0
+        grand_total_unit_lorries = 0
 
-        if dl_area_summary or dl_broker_summary or dl_sauda_details or include_charts:
+        # First pass to collect all summaries
+        if dl_area_summary or dl_broker_summary or dl_sauda_details or dl_unit_summary or include_charts:
             for page_data in data_list:
                 for sauda in page_data.get('saudas', []):
                     area = sauda.get('Area', 'UNKNOWN')
@@ -507,57 +573,106 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     broker_name = sauda.get('Broker', 'UNKNOWN')
                     if broker_name is None or str(broker_name).strip() == "":
                         broker_name = 'UNKNOWN'
+                    
+                    # --- NEW: Get Base_Price ---
+                    base_price_val = sauda.get('Base_Price', 'N/A')
+                    if base_price_val is None or str(base_price_val).strip() == "":
+                        base_price_val = 'N/A'
+                    
                     try:
                         lorries_val = sauda.get('No_of_Lorries', 0)
                         lorries = int(lorries_val) if lorries_val is not None else 0
                     except (ValueError, TypeError):
                         lorries = 0
-                    area_summary[area] = area_summary.get(area, 0) + lorries
-                    if broker_name not in broker_summary:
-                        broker_summary[broker_name] = {"total_lorries": 0, "area_breakdown": {}}
-                    broker_summary[broker_name]["total_lorries"] += lorries
-                    broker_summary[broker_name]["area_breakdown"][area] = broker_summary[broker_name]["area_breakdown"].get(area, 0) + lorries
-                    total_lorries += lorries
+                    
+                    # Init base_price dicts if not present
+                    if base_price_val not in area_summary:
+                        area_summary[base_price_val] = {}
+                    if base_price_val not in broker_summary:
+                        broker_summary[base_price_val] = {}
+                    if base_price_val not in unit_summary:
+                        unit_summary[base_price_val] = {}
+
+                    # Area Summary
+                    area_summary[base_price_val][area] = area_summary[base_price_val].get(area, 0) + lorries
+                    
+                    # Broker Summary
+                    if broker_name not in broker_summary[base_price_val]:
+                        broker_summary[base_price_val][broker_name] = {"total_lorries": 0, "area_breakdown": {}}
+                    broker_summary[base_price_val][broker_name]["total_lorries"] += lorries
+                    broker_summary[base_price_val][broker_name]["area_breakdown"][area] = broker_summary[base_price_val][broker_name]["area_breakdown"].get(area, 0) + lorries
+                    
+                    # Base Price Summary
+                    base_price_summary[base_price_val] = base_price_summary.get(base_price_val, 0) + lorries
+
+                    grand_total_lorries += lorries # Grand total
+
+                    # --- UNIT PARSING LOGIC ---
+                    raw_unit_str = sauda.get('Unit', '')
+                    if raw_unit_str:
+                        matches = re.findall(r"([A-Za-z0-9]+)\s*[-:]\s*(\d+)", str(raw_unit_str))
+                        
+                        for mill_code, count_str in matches:
+                            try:
+                                u_count = int(count_str)
+                                mill_code = mill_code.strip().upper()
+                                
+                                if mill_code not in unit_summary[base_price_val]:
+                                    unit_summary[base_price_val][mill_code] = {}
+                                
+                                unit_summary[base_price_val][mill_code][area] = unit_summary[base_price_val][mill_code].get(area, 0) + u_count
+                                grand_total_unit_lorries += u_count # Grand total for units
+                            except ValueError:
+                                pass
 
         # --- Part 2: Create Summary PDF Page ---
-        if dl_area_summary or dl_broker_summary:
+        if dl_area_summary or dl_broker_summary or dl_unit_summary:
             pdf.add_page()
-
-            # === AREA SUMMARY ===
+            
+            # --- NEW ORDER: Area Summary First ---
             if dl_area_summary:
                 pdf.set_font("Arial", 'B', 16)
                 pdf.set_text_color(0, 0, 0)
                 pdf.cell(0, 10, 'Area-wise Lorry Summary', 0, 1, 'C')
-                pdf.ln(5)
+                pdf.ln(2)
 
                 col_width_area = 100
                 col_width_count = 45
                 col_width_pct = 45
 
-                pdf.set_font("Arial", 'B', 12)
-                pdf.set_fill_color(230, 230, 230)
-                pdf.cell(col_width_area, 8, 'Area', 1, 0, 'C', fill=True)
-                pdf.cell(col_width_count, 8, 'Total Lorries', 1, 0, 'C', fill=True)
-                pdf.cell(col_width_pct, 8, 'Percentage', 1, 1, 'C', fill=True)
+                for base_price_key, basis_area_summary in sorted(area_summary.items()):
+                    if pdf.get_y() > 240: pdf.add_page() # Page break check
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.set_fill_color(240, 240, 240) # Lighter grey for sub-header
+                    pdf.cell(0, 8, f"Base Price: {base_price_key}", 1, 1, 'L', fill=True)
 
-                pdf.set_font("Arial", '', 10)
-                if total_lorries > 0:
-                    for area, count in sorted(area_summary.items()):
-                        percentage = (count / total_lorries) * 100
-                        pdf.cell(col_width_area, 8, f' {safe_txt(area)}', 1)
-                        pdf.cell(col_width_count, 8, str(count), 1, 0, 'C')
-                        pdf.cell(col_width_pct, 8, f'{percentage:.2f}%', 1, 1, 'R')
-                else:
-                    pdf.cell(190, 10, "No lorry data found to summarize.", 1, 1, 'C')
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.set_fill_color(230, 230, 230)
+                    pdf.cell(col_width_area, 8, 'Area', 1, 0, 'C', fill=True)
+                    pdf.cell(col_width_count, 8, 'Total Lorries', 1, 0, 'C', fill=True)
+                    pdf.cell(col_width_pct, 8, 'Percentage', 1, 1, 'C', fill=True)
 
-                pdf.set_font("Arial", 'B', 10)
-                pdf.cell(col_width_area, 8, 'TOTAL', 1, 0, 'C')
-                pdf.cell(col_width_count, 8, str(total_lorries), 1, 0, 'C')
-                pdf.cell(col_width_pct, 8, '100.00%', 1, 1, 'R')
-                pdf.ln(10)
+                    pdf.set_font("Arial", '', 10)
+                    basis_total_lorries = sum(basis_area_summary.values())
+                    if basis_total_lorries > 0:
+                        for area, count in sorted(basis_area_summary.items()):
+                            percentage = (count / basis_total_lorries) * 100
+                            pdf.cell(col_width_area, 8, f' {safe_txt(area)}', 1)
+                            pdf.cell(col_width_count, 8, str(count), 1, 0, 'C')
+                            pdf.cell(col_width_pct, 8, f'{percentage:.2f}%', 1, 1, 'R')
+                    else:
+                        pdf.cell(190, 10, "No lorry data found for this base price.", 1, 1, 'C')
 
-            # === BROKER SUMMARY ===
+                    pdf.set_font("Arial", 'B', 10)
+                    pdf.cell(col_width_area, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(col_width_count, 8, str(basis_total_lorries), 1, 0, 'C')
+                    pdf.cell(col_width_pct, 8, '100.00%', 1, 1, 'R')
+                    pdf.ln(5)
+                pdf.ln(5)
+
+            # --- NEW ORDER: Broker Summary Second ---
             if dl_broker_summary:
+                if pdf.get_y() > 200: pdf.add_page()
                 pdf.set_font("Arial", 'B', 16)
                 pdf.set_text_color(0, 0, 0)
                 pdf.cell(0, 10, 'Broker-wise Lorry Summary', 0, 1, 'C')
@@ -567,82 +682,195 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 col_width_breakdown = 100
                 col_width_total = 30
 
-                pdf.set_font("Arial", 'B', 12)
-                pdf.set_fill_color(230, 230, 230)
-                pdf.cell(col_width_broker, 8, 'Broker', 1, 0, 'C', fill=True)
-                pdf.cell(col_width_breakdown, 8, 'Area - No. of Lorry(s)', 1, 0, 'C', fill=True)
-                pdf.cell(col_width_total, 8, 'Total', 1, 1, 'C', fill=True)
+                for base_price_key, basis_broker_summary in sorted(broker_summary.items()):
+                    if pdf.get_y() > 240: pdf.add_page()
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.set_fill_color(240, 240, 240)
+                    pdf.cell(0, 8, f"Base Price: {base_price_key}", 1, 1, 'L', fill=True)
 
-                pdf.set_font("Arial", '', 8)
-                if not broker_summary:
-                    pdf.cell(190, 10, "No broker data found to summarize.", 1, 1, 'C')
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.set_fill_color(230, 230, 230)
+                    pdf.cell(col_width_broker, 8, 'Broker', 1, 0, 'C', fill=True)
+                    pdf.cell(col_width_breakdown, 8, 'Area - No. of Lorry(s)', 1, 0, 'C', fill=True)
+                    pdf.cell(col_width_total, 8, 'Total', 1, 1, 'C', fill=True)
 
-                for broker_name, data in sorted(broker_summary.items()):
-                    broker_text = f' {safe_txt(broker_name)}'
-                    total_text = str(data["total_lorries"])
-                    breakdown_list = []
-                    for area_name, count in data["area_breakdown"].items():
-                        if count > 0:
-                            breakdown_list.append(f"{area_name} - {count}")
-                    breakdown_text = f' {safe_txt(", ".join(breakdown_list))}'
+                    pdf.set_font("Arial", '', 8)
+                    if not basis_broker_summary:
+                        pdf.cell(190, 10, "No broker data found for this base price.", 1, 1, 'C')
 
-                    start_x = pdf.get_x()
-                    start_y = pdf.get_y()
+                    basis_total_lorries = 0
+                    for broker_name, data in sorted(basis_broker_summary.items()):
+                        broker_text = f' {safe_txt(broker_name)}'
+                        total_text = str(data["total_lorries"])
+                        basis_total_lorries += data["total_lorries"]
+                        breakdown_list = []
+                        for area_name, count in data["area_breakdown"].items():
+                            if count > 0:
+                                breakdown_list.append(f"{area_name} - {count}")
+                        breakdown_text = f' {safe_txt(", ".join(breakdown_list))}'
 
-                    # Invisible white text for height calc
-                    pdf.set_text_color(255, 255, 255)
-                    pdf.multi_cell(col_width_broker, 6, broker_text, border=0, align='L')
-                    h1 = pdf.get_y() - start_y
-                    pdf.set_xy(start_x + col_width_broker, start_y)
-                    pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
-                    h2 = pdf.get_y() - start_y
-                    row_height = max(h1, h2, 6)
-
-                    # Page break
-                    if start_y + row_height > 270:
-                        pdf.add_page()
+                        start_x = pdf.get_x()
                         start_y = pdf.get_y()
 
-                    # Draw visible text
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.set_xy(start_x, start_y)
-                    pdf.multi_cell(col_width_broker, 6, broker_text, border=0, align='L')
-                    pdf.set_xy(start_x + col_width_broker, start_y)
-                    pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
-                    pdf.set_xy(start_x + col_width_broker + col_width_breakdown, start_y)
-                    pdf.cell(col_width_total, 6, total_text, border=0, align='C')
+                        pdf.set_text_color(255, 255, 255)
+                        pdf.multi_cell(col_width_broker, 6, broker_text, border=0, align='L')
+                        h1 = pdf.get_y() - start_y
+                        pdf.set_xy(start_x + col_width_broker, start_y)
+                        pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
+                        h2 = pdf.get_y() - start_y
+                        row_height = max(h1, h2, 6)
 
-                    # Borders
-                    pdf.set_xy(start_x, start_y)
-                    pdf.rect(start_x, start_y, col_width_broker, row_height)
-                    pdf.rect(start_x + col_width_broker, start_y, col_width_breakdown, row_height)
-                    pdf.rect(start_x + col_width_broker + col_width_breakdown, start_y, col_width_total, row_height)
-                    pdf.set_y(start_y + row_height)
+                        if start_y + row_height > 260: # Smaller threshold for footer
+                            pdf.add_page()
+                            start_y = pdf.get_y()
 
-                pdf.set_font("Arial", 'B', 10)
-                pdf.cell(col_width_broker + col_width_breakdown, 8, 'TOTAL LORRIES', 1, 0, 'C')
-                pdf.cell(col_width_total, 8, str(total_lorries), 1, 1, 'C')
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_xy(start_x, start_y)
+                        pdf.multi_cell(col_width_broker, 6, broker_text, border=0, align='L')
+                        pdf.set_xy(start_x + col_width_broker, start_y)
+                        pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
+                        pdf.set_xy(start_x + col_width_broker + col_width_breakdown, start_y)
+                        pdf.cell(col_width_total, 6, total_text, border=0, align='C')
 
-        # --- Part 3: Create Data Pages (One per Image) ---
+                        pdf.set_xy(start_x, start_y)
+                        pdf.rect(start_x, start_y, col_width_broker, row_height)
+                        pdf.rect(start_x + col_width_broker, start_y, col_width_breakdown, row_height)
+                        pdf.rect(start_x + col_width_broker + col_width_breakdown, start_y, col_width_total, row_height)
+                        pdf.set_y(start_y + row_height)
+
+                    pdf.set_font("Arial", 'B', 10)
+                    pdf.cell(col_width_broker + col_width_breakdown, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(col_width_total, 8, str(basis_total_lorries), 1, 1, 'C')
+                    pdf.ln(5)
+                pdf.ln(5)
+
+            # --- NEW ORDER: Unit-Area Summary Third ---
+            if dl_unit_summary:
+                if pdf.get_y() > 200: pdf.add_page()
+                
+                pdf.set_font("Arial", 'B', 16)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 10, 'Unit-Area wise Lorry Summary', 0, 1, 'C')
+                pdf.ln(5)
+
+                col_width_unit = 60
+                col_width_breakdown = 100
+                col_width_total = 30
+
+                for base_price_key, basis_unit_summary in sorted(unit_summary.items()):
+                    if pdf.get_y() > 240: pdf.add_page()
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.set_fill_color(240, 240, 240)
+                    pdf.cell(0, 8, f"Base Price: {base_price_key}", 1, 1, 'L', fill=True)
+
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.set_fill_color(230, 230, 230)
+                    pdf.cell(col_width_unit, 8, 'Unit (Mill)', 1, 0, 'C', fill=True)
+                    pdf.cell(col_width_breakdown, 8, 'Area Breakdown', 1, 0, 'C', fill=True)
+                    pdf.cell(col_width_total, 8, 'Total', 1, 1, 'C', fill=True)
+
+                    pdf.set_font("Arial", '', 9)
+                    
+                    if not basis_unit_summary:
+                        pdf.cell(190, 10, "No Unit/Mill data extracted for this base price.", 1, 1, 'C')
+
+                    basis_total_unit_lorries = 0
+                    for unit_name, areas in sorted(basis_unit_summary.items()):
+                        unit_text = f' {safe_txt(unit_name)}'
+                        
+                        breakdown_items = []
+                        row_total = 0
+                        for area_name, count in areas.items():
+                            if count > 0:
+                                breakdown_items.append(f"{area_name}: {count}")
+                                row_total += count
+                        
+                        basis_total_unit_lorries += row_total
+                        breakdown_text = f' {safe_txt(", ".join(breakdown_items))}'
+                        total_text = str(row_total)
+
+                        start_x = pdf.get_x()
+                        start_y = pdf.get_y()
+
+                        pdf.set_text_color(255, 255, 255)
+                        pdf.multi_cell(col_width_unit, 6, unit_text, border=0, align='L')
+                        h1 = pdf.get_y() - start_y
+                        pdf.set_xy(start_x + col_width_unit, start_y)
+                        pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
+                        h2 = pdf.get_y() - start_y
+                        row_height = max(h1, h2, 6)
+
+                        if start_y + row_height > 260:
+                            pdf.add_page()
+                            start_y = pdf.get_y()
+
+                        pdf.set_text_color(0, 0, 0)
+                        
+                        pdf.set_xy(start_x, start_y)
+                        pdf.multi_cell(col_width_unit, 6, unit_text, border=0, align='L')
+                        pdf.set_xy(start_x + col_width_unit, start_y)
+                        pdf.multi_cell(col_width_breakdown, 6, breakdown_text, border=0, align='L')
+                        pdf.set_xy(start_x + col_width_unit + col_width_breakdown, start_y)
+                        pdf.cell(col_width_total, 6, total_text, border=0, align='C')
+
+                        pdf.set_xy(start_x, start_y)
+                        pdf.rect(start_x, start_y, col_width_unit, row_height)
+                        pdf.rect(start_x + col_width_unit, start_y, col_width_breakdown, row_height)
+                        pdf.rect(start_x + col_width_unit + col_width_breakdown, start_y, col_width_total, row_height)
+                        
+                        pdf.set_y(start_y + row_height)
+
+                    pdf.set_font("Arial", 'B', 10)
+                    pdf.cell(col_width_unit + col_width_breakdown, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(col_width_total, 8, str(basis_total_unit_lorries), 1, 1, 'C')
+                    pdf.ln(5)
+                pdf.ln(5)
+            
+            # --- NEW ORDER: Base Price Summary Last ---
+            if pdf.get_y() > 220: pdf.add_page()
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(0, 10, 'Base Price-wise Lorry Summary', 0, 1, 'C')
+            pdf.ln(2)
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_fill_color(230, 230, 230)
+            pdf.cell(100, 8, 'Base Price', 1, 0, 'C', fill=True)
+            pdf.cell(90, 8, 'Total Lorries', 1, 1, 'C', fill=True)
+            pdf.set_font("Arial", '', 10)
+            for base_price_key, count in sorted(base_price_summary.items()):
+                pdf.cell(100, 8, f' {safe_txt(base_price_key)}', 1, 0, 'L')
+                pdf.cell(90, 8, str(count), 1, 1, 'C')
+            pdf.set_font("Arial", 'B', 10)
+            pdf.cell(100, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+            pdf.cell(90, 8, str(grand_total_lorries), 1, 1, 'C')
+            pdf.ln(10)
+
+
+        # --- Part 3: Create Data Pages (REVERTED TO ONE TABLE PER PAGE) ---
         if dl_sauda_details:
+            # --- NEW: Define Columns with Base_Price ---
             col_widths = {
-                "Broker": 36, "Area": 22, "Mukkam": 22, "Bales_Mark": 18,   
-                "No_of_Lorries": 14, "No_of_Bales": 14, "Grades": 24, "Rates": 24, "Unit": 16           
+                "Base_Price": 18, "Broker": 32, "Area": 20, "Mukkam": 20, "Bales_Mark": 18, 
+                "No_of_Lorries": 12, "No_of_Bales": 12, "Grades": 20, "Rates": 20, "Unit": 18 
             }
-            headers = ["Broker", "Area", "Mukkam", "Bales Mark", "Lorries", "Bales", "Grades", "Rates", "Unit"]
-            header_keys = ["Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit"]
+            headers = ["Base Price", "Broker", "Area", "Mukkam", "Bales Mark", "Lorries", "Bales", "Grades", "Rates", "Unit"]
+            header_keys = ["Base_Price", "Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit"]
+            # Total width = 190
 
+            # --- REVERTED to looping by page, not base_price ---
             for i, page_data in enumerate(data_list):
                 pdf.add_page()
+                
+                # --- HEADER FOR THIS PAGE (Title updated) ---
                 pdf.set_text_color(0, 0, 0)
                 pdf.set_font("Arial", 'B', 16)
-                pdf.cell(0, 10, f'Sauda Details', 0, 1, 'C')
-                pdf.ln(5)
-                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(0, 10, 'Sauda Details', 0, 1, 'C') # --- TITLE CHANGED ---
+                pdf.ln(2)
+                pdf.set_font("Arial", 'B', 10)
                 pdf.cell(95, 8, f"Page Date: {page_data.get('PAGE_DATE', 'N/A')}", 0, 0, 'L')
                 pdf.cell(95, 8, f"TD5 Base Price: {page_data.get('OPENING_PRICE', 'N/A')}", 0, 1, 'R')
                 pdf.ln(5)
-
+                
+                # --- TABLE HEADERS ---
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_fill_color(230, 230, 230)
                 for j, header in enumerate(headers):
@@ -650,15 +878,27 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     pdf.cell(col_widths[key], 7, header, 1, 0, 'C', fill=True)
                 pdf.ln()
 
+                # --- TABLE ROWS ---
                 pdf.set_font("Arial", '', 8)
+                
                 saudas_list = page_data.get('saudas', [])
+                page_total_lorries = 0 # --- NEW: Initialize page total ---
+
                 if not saudas_list:
                     pdf.cell(190, 10, "No Sauda entries found for this page.", 1, 1, 'C')
 
+                # Iterate rows in this page
                 for sauda in saudas_list:
+                    try:
+                        page_total_lorries += int(sauda.get('No_of_Lorries', 0) or 0)
+                    except ValueError:
+                        pass # Ignore if No_of_Lorries is not a number
+
                     grades_str = ", ".join(map(str, sauda.get('Grades', []))) if isinstance(sauda.get('Grades'), list) else str(sauda.get('Grades', ''))
                     rates_str = ", ".join(map(str, sauda.get('Rates', []))) if isinstance(sauda.get('Rates'), list) else str(sauda.get('Rates', ''))
+                    
                     sauda_data = {
+                        "Base_Price": str(sauda.get('Base_Price', '')), # Add Base_Price to data
                         "Broker": str(sauda.get('Broker', '')),
                         "Area": str(sauda.get('Area', '') or ''),
                         "Mukkam": str(sauda.get('Mukkam', '') or ''),
@@ -673,7 +913,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     start_x = pdf.get_x()
                     start_y = pdf.get_y()
 
-                    # Invisible white text for measuring heights
+                    # Calc Max Height
                     pdf.set_text_color(255, 255, 255)
                     max_h = 6
                     current_x_temp = start_x
@@ -686,9 +926,10 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         if h > max_h: max_h = h
                         current_x_temp += col_widths[key]
 
-                    # Page break check
-                    if start_y + max_h > 270:
+                    # Page Break Check
+                    if start_y + max_h > 260: # 260 to leave room for footer+header
                         pdf.add_page()
+                        # Re-print Header
                         pdf.set_text_color(0, 0, 0)
                         pdf.set_font("Arial", 'B', 9)
                         pdf.set_fill_color(230, 230, 230)
@@ -699,17 +940,30 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.set_font("Arial", '', 8)
                         start_y = pdf.get_y()
 
-                    # Draw visible content + borders
+                    # Draw Content
                     pdf.set_text_color(0, 0, 0)
                     current_x = start_x
                     for key in header_keys:
                         txt = safe_txt(sauda_data[key])
-                        align = 'C' if key in ['No_of_Lorries', 'No_of_Bales'] else 'L'
+                        align = 'C' if key in ['No_of_Lorries', 'No_of_Bales', 'Base_Price'] else 'L' # Center Base_Price too
                         pdf.set_xy(current_x, start_y)
                         pdf.multi_cell(col_widths[key], 6, txt, border=0, align=align)
                         pdf.rect(current_x, start_y, col_widths[key], max_h)
                         current_x += col_widths[key]
                     pdf.set_y(start_y + max_h)
+                
+                # --- NEW: Add Page Total Row ---
+                if saudas_list:
+                    pdf.set_font("Arial", 'B', 9)
+                    # Calculate widths
+                    label_width = col_widths['Base_Price'] + col_widths['Broker'] + col_widths['Area'] + col_widths['Mukkam'] + col_widths['Bales_Mark']
+                    lorry_width = col_widths['No_of_Lorries']
+                    empty_width = col_widths['No_of_Bales'] + col_widths['Grades'] + col_widths['Rates'] + col_widths['Unit']
+                    
+                    pdf.cell(label_width, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(lorry_width, 8, str(page_total_lorries), 1, 0, 'C')
+                    pdf.cell(empty_width, 8, '', 1, 1, 'C') # Empty cell for remaining columns
+
 
         # --- Part 4: Append Charts at End (if include_charts) ---
         if include_charts:
@@ -853,8 +1107,7 @@ def get_json_from_image(image_bytes, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # --- [NEW SAUDA PROMPT - V8 (With specific Area logic)] ---
-        # --- [NEW SAUDA PROMPT - V9 (Qtls/Bls Support + Unit Sum Check)] ---
+        # --- [NEW SAUDA PROMPT - V11 (Base_Price)] ---
         prompt_text = """
 You are a specialized Data Extraction Engine for handwritten "Jute Sauda" (deal) ledgers. Your ONLY task is to analyze an image of a ledger page and convert ALL entries on that page into a **single, structured JSON object**.
 
@@ -868,59 +1121,6 @@ This is your single source of truth for names and locations. You MUST use this l
 * **NORTHERN (NR):** DINHATA, MAYNAGURI, BAXIRHAT, HUSLUDANGA, BASIRHAT, BELAKOBA, DHUPGURI, HALDIBari, BAMANHAT, TOOFANGANJ, MATHABHANGA, COOCHBEAR, CHOWDHURIHAT, DEWANHAT, BAROBISHA
 * **ODISHA (OD):** BHADRAK
 * **BANGLADESH (BD):** BANGLADESH
-
-AREA_GRP	AREA_GRP_DESC
-AS	ASSAM
-BD	BANGLADESH
-BR	BIHAR
-NR	NORTHERN
-OD	ODISHA
-SB	SOUTH BENGAL
-SN	SEMI NORTHERN
-
-**MAPPING TABLE:**
-* **AS (ASSAM):**
-    * AS001: FAKIRAGRAM, GOSSAIGAON, GUWAHATI, HOWLY, SARBHOG, TARABARI
-    * AS002: KHARUPETIA
-    * AS003: BILASIPARA, DHUBRI, GOURIPUR, SAPATGRAM
-    * AS004: BHURAGAON, DHINGBAZAR, MAIRABARI, NOWGAON, RAHA, UPARHALI
-* **BD (BANGLADESH):**
-    * BD001: BANGLADESH
-* **BR (BIHAR):**
-    * BR001: FORBESGANJ, GULABBAGH, KASBA, PURNEA, RAGHOPUR, SINGHESWAR STHAN
-    * BR002 (LOOSE): FORBESGANJ-L, PURNEA-L, TRIBENIGANJ-L
-    * BR003 (LOOSE): KISHANGANJ-L
-    * BR004: BARSOI, KISHANGANJ
-    * BR005: KISHANGANJ-J, MURLIGANJ
-    * BR006: KISHANGANJ-B
-    * BR007: KISHANGANJ-A
-* **NR (NORTHERN):**
-    * NR001: BERUBARI, BHETAGURI, BHOTPATTI, DAKGHARA, DHUPGURI, HALDIBARI, HUSLUDANGA, MATHABHANGA, MAYNAGURI, SILIGURI, TOOFANGANJ
-    * NR002: ALLIANCE (NR), BAMANHAT, CHANGRABANDHRA, CHOWDHURIHAT, GHUSKADANGA
-    * NR003: BELAKOBA
-    * NR004: COOCHBEHAR, DEWANHAT, DINHATA
-    * NR005: BAROBISHA, BAXIRHAT
-* **OD (ODISHA):**
-    * OD001: BHADRAK
-* **SB (SOUTH BENGAL):**
-    * SB001: AMTA, AMTALA, ANDULIA, ARANGHATA, ASSANAGAR, BADKULLA, BAGULA, BALAGARH, BANGALJHI, BARA ANDULIA, BEHRAMPUR, BELDANGA, BERACHAPA, BETAI, BETHUADAHARI, BHABTA, BHAGIRATHPUR, BHAGWANGOLA, BHIMPUR, BIRPUR, BONGAON, CHAKDAH, CHANDERNAGORE, CHANDGARH, CHANDPARA, CHAPRA, COSSIMBAZAR, DAINHAT, DAKSHINPAPA, DEBAGRAM, DEBNATHPUR, DHUBULIA, DOMKAL, DUTTAFULIA, GANGNAPUR, GAYESPUR, GOAS, GOPALNAGAR, HAJINAGAR, HANSKHALI, HANSPUKUR, HARINGHATA, ISLAMPUR-SB, JALANGI, JANGIPUR, JIAGANG, JIRAT, KALIGANJ, KALITALA, KALNA, KALYANI, KAMARHATTY, KANTALIA, KARIMPUR, KASHIPUR, KATWA, KAZISAHA, KINNISON (S/G), KRISHNANAGAR, LALBAGH, LOCHENPUR, MAJDIA, MARUTHIA, MAYAPUR, MOGRA, NABADWIP, NAGARUKRA, NAGERPUR, NAKURTALA, NATIAL, NAWPARA, NAZIRPUR, NILGANJ, NIMTALA, NOWDA, PAGLACHANDI, PALASIPARA, PALASSY, PATKIBARI, PATULI, PIRTALLA, PURBASTHALI, RADHANAGAR, RAJAPUR, RANAGHAT, REZINAGAR, RISHRA, SAGARPARA, SAHEBNAGAR, SANTIPUR, SARAGACHI, SERAMPORE, SHAIKHPARA, SHAKTIPUR, SIBPUR, SREERAMPORE(O), TARAPUR, TEHATTA, TENALIPARA, TRIMOHINI, VICTORIA S/G
-    * SB002: BADURIA, BASIRHAT, CHANDITALA, NALIKUL, SEORAPHULLY, SINGUR
-    * SB003: GOLABARI., HARIPAL, MOYNA., SEPAIGACHI., TARKESWAR.
-    * SB004: GOLABARI, HARIPAL, MOYNA, SEPAIGACHI, TARKESWAR
-    * SB005 (LOOSE): AMTALA-L, AMTALA_L, ANDULIA-L, ASSANNAGR-L, BALAGARH-L, BANGALJHI-L, BETHUADAHARI-L, BHIMPUR-L, BONGAON-L, BURDWAN-L, CHAPRA-L, COSSIMBAZAR-L, DAINHAT-L, DHUBULIA-L, HARINGHATA-L, ISLAMPUR-SB-L, JALANGI-L, KALITALA-L, KANTHALIA-L, KARIMPUR-L, KATHALIA-L, MAJDIA-L, NABADWIIP-L, NAZIRPUR-L, NILGANJ-L, PALASIPARA-L, PALSHIPARA-L, RANAGHAT-L, SAHEBNAGAR-L, TRIMOHINI-L
-    * SB006: DHULIYAN
-    * SB007: CHAPADANGA
-    * SB008 (HB): AMDANGA-HB, ASSANAGAR-HB, BANGALJHI-HB, BHIMPUR-HB, BONGAON-HB, CHAPRA-HB, COSSIMBAZAR-HB, HARINGHATA-HB, ISLAMPUR-HB, JALANGI-HB, KALITALA-HB, KARIMPUR-HB, MURUTHIA-HB, NABADWIP-HB, NAWPARA-HB, NAZIRPUR-HB, NILGANJ-HB, PALASIPARA-HB, RANAGHAT-HB, SAHEBNAGAR-HB, TARAPUR-HB, TEHATTA-HB
-* **SN (SEMI NORTHERN):**
-    * SN001: BARAHAR, BULBULCHANDI, HARISHCHPORE, KARIALI, MALDAH, RISHRA (SN), SAMSI, TULSIHATA
-    * SN002: DALKHOLA, KANKI, RAIGANJ, TUNNIDIGHI
-    * SN003: ISLAMPUR-SN, KALIYAGANJ, RAMGANJ, SONARPUR
-    * SN004: ISLAMPORE/SN, RAMGANJ/SN, SONARPUR/SN
-    * SN005 (Jute): HARISHCHPUR-J, RAIGANJ-J, SAMSI-J, SRIGHAR, TULSIHATA-J
-    * SN006 (LOOSE): DALKHOLA-L, FARAKKA-L, GAZOLE-L, HARISHCHPUR-L, ISLAMPUR-SN-L, KANKI-L, RAIGANJ-L, TULSIHATA-L, TUNIDIGHI-L
-    * SN007 (LOOSE): BALURGHAT-L, GANGARAMPUR-L
-    * SN008: BALURGHAT, RAMGANJ, SRIGHAR
-
 
 AREA_GRP	AREA_GRP_DESC
 AS	ASSAM
@@ -3764,6 +3964,58 @@ Broker Code	Broker
 20000055	MD. ABDUL KARIM
 20000065	BROTHERS ENTERPRISE
 
+AREA_GRP    AREA_GRP_DESC
+AS  ASSAM
+BD  BANGLADESH
+BR  BIHAR
+NR  NORTHERN
+OD  ODISHA
+SB  SOUTH BENGAL
+SN  SEMI NORTHERN
+
+**MAPPING TABLE:**
+* **AS (ASSAM):**
+    * AS001: FAKIRAGRAM, GOSSAIGAON, GUWAHATI, HOWLY, SARBHOG, TARABARI
+    * AS002: KHARUPETIA
+    * AS003: BILASIPARA, DHUBRI, GOURIPUR, SAPATGRAM
+    * AS004: BHURAGAON, DHINGBAZAR, MAIRABARI, NOWGAON, RAHA, UPARHALI
+* **BD (BANGLADESH):**
+    * BD001: BANGLADESH
+* **BR (BIHAR):**
+    * BR001: FORBESGANJ, GULABBAGH, KASBA, PURNEA, RAGHOPUR, SINGHESWAR STHAN
+    * BR002 (LOOSE): FORBESGANJ-L, PURNEA-L, TRIBENIGANJ-L
+    * BR003 (LOOSE): KISHANGANJ-L
+    * BR004: BARSOI, KISHANGANJ
+    * BR005: KISHANGANJ-J, MURLIGANJ
+    * BR006: KISHANGANJ-B
+    * BR007: KISHANGANJ-A
+* **NR (NORTHERN):**
+    * NR001: BERUBARI, BHETAGURI, BHOTPATTI, DAKGHARA, DHUPGURI, HALDIBARI, HUSLUDANGA, MATHABHANGA, MAYNAGURI, SILIGURI, TOOFANGANJ
+    * NR002: ALLIANCE (NR), BAMANHAT, CHANGRABANDHRA, CHOWDHURIHAT, GHUSKADANGA
+    * NR003: BELAKOBA
+    * NR004: COOCHBEHAR, DEWANHAT, DINHATA
+    * NR005: BAROBISHA, BAXIRHAT
+* **OD (ODISHA):**
+    * OD001: BHADRAK
+* **SB (SOUTH BENGAL):**
+    * SB001: AMTA, AMTALA, ANDULIA, ARANGHATA, ASSANAGAR, BADKULLA, BAGULA, BALAGARH, BANGALJHI, BARA ANDULIA, BEHRAMPUR, BELDANGA, BERACHAPA, BETAI, BETHUADAHARI, BHABTA, BHAGIRATHPUR, BHAGWANGOLA, BHIMPUR, BIRPUR, BONGAON, CHAKDAH, CHANDERNAGORE, CHANDGARH, CHANDPARA, CHAPRA, COSSIMBAZAR, DAINHAT, DAKSHINPAPA, DEBAGRAM, DEBNATHPUR, DHUBULIA, DOMKAL, DUTTAFULIA, GANGNAPUR, GAYESPUR, GOAS, GOPALNAGAR, HAJINAGAR, HANSKHALI, HANSPUKUR, HARINGHATA, ISLAMPUR-SB, JALANGI, JANGIPUR, JIAGANG, JIRAT, KALIGANJ, KALITALA, KALNA, KALYANI, KAMARHATTY, KANTALIA, KARIMPUR, KASHIPUR, KATWA, KAZISAHA, KINNISON (S/G), KRISHNANAGAR, LALBAGH, LOCHENPUR, MAJDIA, MARUTHIA, MAYAPUR, MOGRA, NABADWIP, NAGARUKRA, NAGERPUR, NAKURTALA, NATIAL, NAWPARA, NAZIRPUR, NILGANJ, NIMTALA, NOWDA, PAGLACHANDI, PALASIPARA, PALASSY, PATKIBARI, PATULI, PIRTALLA, PURBASTHALI, RADHANAGAR, RAJAPUR, RANAGHAT, REZINAGAR, RISHRA, SAGARPARA, SAHEBNAGAR, SANTIPUR, SARAGACHI, SERAMPORE, SHAIKHPARA, SHAKTIPUR, SIBPUR, SREERAMPORE(O), TARAPUR, TEHATTA, TENALIPARA, TRIMOHINI, VICTORIA S/G
+    * SB002: BADURIA, BASIRHAT, CHANDITALA, NALIKUL, SEORAPHULLY, SINGUR
+    * SB003: GOLABARI., HARIPAL, MOYNA., SEPAIGACHI., TARKESWAR.
+    * SB004: GOLABARI, HARIPAL, MOYNA, SEPAIGACHI, TARKESWAR
+    * SB005 (LOOSE): AMTALA-L, AMTALA_L, ANDULIA-L, ASSANNAGR-L, BALAGARH-L, BANGALJHI-L, BETHUADAHARI-L, BHIMPUR-L, BONGAON-L, BURDWAN-L, CHAPRA-L, COSSIMBAZAR-L, DAINHAT-L, DHUBULIA-L, HARINGHATA-L, ISLAMPUR-SB-L, JALANGI-L, KALITALA-L, KANTHALIA-L, KARIMPUR-L, KATHALIA-L, MAJDIA-L, NABADWIIP-L, NAZIRPUR-L, NILGANJ-L, PALASIPARA-L, PALSHIPARA-L, RANAGHAT-L, SAHEBNAGAR-L, TRIMOHINI-L
+    * SB006: DHULIYAN
+    * SB007: CHAPADANGA
+    * SB008 (HB): AMDANGA-HB, ASSANAGAR-HB, BANGALJHI-HB, BHIMPUR-HB, BONGAON-HB, CHAPRA-HB, COSSIMBAZAR-HB, HARINGHATA-HB, ISLAMPUR-HB, JALANGI-HB, KALITALA-HB, KARIMPUR-HB, MURUTHIA-HB, NABADWIP-HB, NAWPARA-HB, NAZIRPUR-HB, NILGANJ-HB, PALASIPARA-HB, RANAGHAT-HB, SAHEBNAGAR-HB, TARAPUR-HB, TEHATTA-HB
+* **SN (SEMI NORTHERN):**
+    * SN001: BARAHAR, BULBULCHANDI, HARISHCHPORE, KARIALI, MALDAH, RISHRA (SN), SAMSI, TULSIHATA
+    * SN002: DALKHOLA, KANKI, RAIGANJ, TUNNIDIGHI
+    * SN003: ISLAMPUR-SN, KALIYAGANJ, RAMGANJ, SONARPUR
+    * SN004: ISLAMPORE/SN, RAMGANJ/SN, SONARPUR/SN
+    * SN005 (Jute): HARISHCHPUR-J, RAIGANJ-J, SAMSI-J, SRIGHAR, TULSIHATA-J
+    * SN006 (LOOSE): DALKHOLA-L, FARAKKA-L, GAZOLE-L, HARISHCHPUR-L, ISLAMPUR-SN-L, KANKI-L, RAIGANJ-L, TULSIHATA-L, TUNIDIGHI-L
+    * SN007 (LOOSE): BALURGHAT-L, GANGARAMPUR-L
+    * SN008: BALURGHAT, RAMGANJ, SRIGHAR
+
 
 **CRITICAL EXTRACTION RULES:**
 
@@ -3772,7 +4024,13 @@ Broker Code	Broker
     * `OPENING_PRICE`: The price prefixed with "op-" (e.g., "op- 9750/9800"). Extract the full string "9750/9800".
 
 2.  **Line Item Data ("saudas"):** Scan the page line by line. Create one JSON object for each entry and add it to the `saudas` list.
-    * **Continuation Logic:** If a line starts with "- " or "->", it is a continuation. You **MUST** use the `Broker`, `Area`, and `Mukkam` from the line directly above it.
+    * **Continuation Logic:** If a line starts with "- " or "->", it is a continuation. You **MUST** use the `Broker`, `Area`, `Mukkam`, and **`Base_Price`** from the line directly above it.
+    * **Base_Price EXTRACTION (NEW FIELD):**
+        * Look for a price written just **before** the name of the broker or at the top of a block of entries (e.g., "9750", "Base Price 9750", "9800/9850").
+        * This indicates the Base Price for this specific Sauda.
+        * If a row has a specific Base Price written, capture it in the `Base_Price` field (e.g., "9750", "9800/9850").
+        * **CRITICAL:** If a row does NOT have a base price written, **carry forward** the `Base_Price` from the previous entry.
+        * If no base price has appeared yet on the page, use the Page `OPENING_PRICE` as the first Base Price.
     * **Broker:** The broker name (e.g., "Rakesh Ghoshal").
     * **Mukkam:** The location name (e.g., "SINGUR", "HARIPAL"). Use the reference list to correct spelling. If no Mukkam is listed, set to `null`.
     * **Bales_Mark & Area Logic (STRICT RULES):**
@@ -3798,7 +4056,7 @@ Broker Code	Broker
         * "4/5/6" -> `["TD4", "TD5", "TD6"]`
         * "5/6" -> `["TD5", "TD6"]`
         * "5/6/SD" -> `["TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
-        * "4/5/6/SD" -> `["TD4", "TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
+        * "4G/5/6/SD" -> `["TD4", "TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
     * **Rates:** The list of rates (e.g., "10400/10100", "9800/9600/9750").
         * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of numbers**.
         * "10400/10100" -> `[10400, 10100]`
@@ -3816,6 +4074,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
   "OPENING_PRICE": "9750/9800",
   "saudas": [
     {
+      "Base_Price": "9800",
       "Broker": "Rakesh Ghoshal",
       "Area": "SOUTH BENGAL",
       "Mukkam": "KRISHNANAGAR",
@@ -3827,6 +4086,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Unit": "SHM - 1, IJM - 2"
     },
     {
+      "Base_Price": "9800",
       "Broker": "Rakesh Ghoshal",
       "Area": "BIHAR",
       "Mukkam": "PURNEA",
@@ -3838,6 +4098,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Unit": "GJM - 2"
     },
     {
+      "Base_Price": "9900",
       "Broker": "Roshan Tradell",
       "Area": "SOUTH BENGAL",
       "Mukkam": "SINGUR",
@@ -3847,22 +4108,11 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Grades": ["TD5", "TD6"],
       "Rates": [10400, 10100],
       "Unit": "SHM - 2, SKT - 3"
-    },
-    {
-      "Broker": "Subrata Pathway",
-      "Area": "ASSAM",
-      "Mukkam": "TARABARI",
-      "Bales_Mark": "Loose",
-      "No_of_Lorries": 1,
-      "No_of_Bales": "80 Bls",
-      "Grades": ["TD4", "TD5", "TD6"],
-      "Rates": [10400, 9750, 9550],
-      "Unit": "SHM - 1"
     }
   ]
 }
 """
-        # --- [END NEW SAUDA PROMPT - V8] ---
+        # --- [END NEW SAUDA PROMPT - V11] ---
         response = model.generate_content([prompt_text, img])
         ai_response_text = response.text
 
@@ -3924,6 +4174,32 @@ def handle_camera_snap():
         st.session_state.captured_image_data = None
         st.session_state.active_input = None
 
+def start_manual_entry():
+    """
+    Initializes the result list with a single empty document
+    and sets extraction_done to True to reveal the editor.
+    """
+    # --- UPDATED: Use IST Time helper ---
+    today_str = get_ist_time().strftime("%d-%m-%Y")
+
+    # Create an empty template document
+    empty_doc = {
+        "PAGE_DATE": today_str,
+        "OPENING_PRICE": "",
+        "saudas": [
+            {
+                "Base_Price": "", "Broker": "", "Area": "", "Mukkam": "", "Bales_Mark": "",
+                "No_of_Lorries": 0, "No_of_Bales": "",
+                "Grades": [], "Rates": [], "Unit": ""
+            }
+        ]
+    }
+    st.session_state.result_list = [empty_doc]
+    st.session_state.extraction_done = True
+    st.session_state.current_edit_index = 0
+    st.session_state.active_input = "manual"
+    st.toast("Manual Entry Mode Activated!", icon="✍️")
+
 # --- PAGINATION CALLBACKS ---
 def save_and_go_next():
     if st.session_state.current_edit_index < len(st.session_state.result_list) - 1:
@@ -3941,8 +4217,8 @@ def add_sauda_row():
         if 'saudas' not in current_doc or not isinstance(current_doc['saudas'], list):
             current_doc['saudas'] = []
         current_doc['saudas'].append({
-            "Broker": "", "Area": "", "Mukkam": "", "Bales_Mark": "",
-            "No_of_Lorries": 0, "No_of_Bales": 0,
+            "Base_Price": "", "Broker": "", "Area": "", "Mukkam": "", "Bales_Mark": "",
+            "No_of_Lorries": 0, "No_of_Bales": "",
             "Grades": [], "Rates": [], "Unit": ""
         })
 
@@ -3973,8 +4249,6 @@ if True:  # Replaced with if True to enable main app directly
         st.markdown("### Hello Sir")
         st.divider()
 
-        # [UPDATED] Removed "Show Visual Charts" checkbox from the sidebar
-
         # [UNCHANGED] Row Management stays here
         if st.session_state.extraction_done and st.session_state.result_list:
             st.write("### Row Management")
@@ -4001,10 +4275,11 @@ if True:  # Replaced with if True to enable main app directly
             st.write("""
                 1.  **Provide Sauda Ledger Image(s):** Upload one or more files (JPG, PNG, PDF).
                 2.  **Take a Picture:** (Local Only) Use the 'Take aPicture' tab to snap a photo.
-                3.  **Extract Data:** Click the 'Extract Data' button. The AI will process all files.
-                4.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, TD5 Base Price, and all Sauda entries.
-                5.  **Download:** Click 'Download as PDF' to download the report AND automatically save data to the database.
-                6.  **Reset:** Click "Reset Process" to start over.
+                3.  **Manual Entry:** Skip scanning and manually type in data.
+                4.  **Extract Data:** Click the 'Extract Data' button. The AI will process all files.
+                5.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, TD5 Base Price, and all Sauda entries.
+                6.  **Download:** Click 'Download as PDF' to download the report AND automatically save data to the database.
+                7.  **Reset:** Click "Reset Process" to start over.
             """)
             st.write("---")
             st.write("To change themes, click the `...` in the top-right, go to `Settings`, and choose `Light` or `Dark`.")
@@ -4023,13 +4298,13 @@ if True:  # Replaced with if True to enable main app directly
     if not MY_API_KEY:
         st.error("🚨 CRITICAL ERROR: API Key not set! 🚨")
         st.markdown("This application requires a Google AI API Key to function.")
-        st.markdown("Please add your API Key to the `MY_API_KEY` variable in the code.")
+        st.markdown("Please add your API Key to your `.streamlit/secrets.toml` file.")
         st.stop()
     else:
         # --- 3. Step 1: Provide an Image (with Tabs) ---
         with st.container(border=True):
-            st.header("Step 1: Upload Sauda Ledger Page(s)")
-            upload_tab, camera_tab = st.tabs(["📁 Upload File(s)", "📸 Take a Picture"])
+            st.header("Step 1: Input Source")
+            upload_tab, camera_tab, manual_tab = st.tabs(["📁 Upload File(s)", "📸 Take a Picture", "✍️ Manual Entry"])
 
             image_data_list = []
             images_to_process = []
@@ -4055,289 +4330,332 @@ if True:  # Replaced with if True to enable main app directly
                         st.session_state.camera_open = True
                         st.rerun()
                 else:
+                    # --- MODIFICATION 2: Added help text ---
                     captured_image = st.camera_input(
                         "Take a Picture of a Document",
                         key=camera_key,
-                        on_change=handle_camera_snap
+                        on_change=handle_camera_snap,
+                        help="For best results, use good lighting, hold the camera steady, and ensure the text is in focus."
                     )
                     if st.button("Close Camera", use_container_width=True):
                         st.session_state.camera_open = False
                         st.rerun()
                 if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
                     image_data_list = [st.session_state.captured_image_data]
+                
+            with manual_tab:
+                st.info("Manually enter sauda details without uploading an image.")
+                st.write("Click the button below to activate the editor in Step 2 with a blank form.")
+                if st.button("Start Manual Entry Mode", type="primary", use_container_width=True):
+                    start_manual_entry()
+                    st.rerun() # Rerun to show the editor immediately
 
             if len(image_data_list) > 20:
                 st.error(f"Batch Limit Exceeded: You uploaded {len(image_data_list)} files. Please select a maximum of 20 files at a time.")
                 st.session_state.active_input = None
                 image_data_list = []
 
-            if image_data_list:
-                col1, col2 = st.columns([2, 3])
-                with col1:
-                    if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
-                        img = Image.open(st.session_state.captured_image_data)
-                        st.image(img, caption="Your Document Image", width=300)
-                    elif st.session_state.active_input == "upload":
-                        st.info(f"📁 {len(image_data_list)} document(s) selected.")
-                        for f in image_data_list[:3]:
-                            st.caption(f" - {f.name}")
-                        if len(image_data_list) > 3:
-                            st.caption(f"  ...and {len(image_data_list) - 3} more.")
-                with col2:
-                    if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
-                        st.success("✅ Photo captured! Ready to extract.")
-                    elif st.session_state.active_input == "upload":
-                        st.info(f"{len(image_data_list)} file(s) provided. Ready to extract?")
-                    if st.button(f"✨ Extract Data from {len(image_data_list)} file(s)", type="primary", use_container_width=True):
-                        all_results = []
-                        with st.spinner("🤖 Intelligent OCR is processing... This may take a moment."):
-                            st.session_state.extraction_done = False
-                            st.session_state.result_list = []
-                            st.session_state.current_edit_index = 0
-                            images_to_process = []
-                            image_names = []
-                            preprocess_bar = st.progress(0, text="Pre-processing files (converting PDFs)...")
+            # ONLY SHOW EXTRACTION BUTTON IF NOT IN MANUAL MODE
+            if st.session_state.active_input != "manual":
+                if image_data_list:
+                    col1, col2 = st.columns([2, 3])
+                    with col1:
+                        if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                            img = Image.open(st.session_state.captured_image_data)
+                            st.image(img, caption="Your Document Image", width=300)
+                        elif st.session_state.active_input == "upload":
+                            st.info(f"📁 {len(image_data_list)} document(s) selected.")
+                            for f in image_data_list[:3]:
+                                st.caption(f" - {f.name}")
+                            if len(image_data_list) > 3:
+                                st.caption(f"  ...and {len(image_data_list) - 3} more.")
+                    with col2:
+                        if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                            st.success("✅ Photo captured! Ready to extract.")
+                        elif st.session_state.active_input == "upload":
+                            st.info(f"{len(image_data_list)} file(s) provided. Ready to extract?")
+                        if st.button(f"✨ Extract Data from {len(image_data_list)} file(s)", type="primary", use_container_width=True):
+                            all_results = []
+                            with st.spinner("🤖 Intelligent OCR is processing... This may take a moment."):
+                                st.session_state.extraction_done = False
+                                st.session_state.result_list = []
+                                st.session_state.current_edit_index = 0
+                                images_to_process = []
+                                image_names = []
+                                preprocess_bar = st.progress(0, text="Pre-processing files (converting PDFs)...")
 
-                            if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
-                                try:
-                                    uploaded_file = st.session_state.captured_image_data
-                                    uploaded_file.seek(0)
-                                    img_bytes = uploaded_file.getvalue()
-                                    images_to_process.append(img_bytes)
-                                    image_names.append("Captured_Image.jpg")
-                                    preprocess_bar.progress(1.0, text="Loaded 1 captured image.")
-                                except Exception as e:
-                                    st.warning(f"Could not load camera image. Error: {e}")
-                            elif st.session_state.active_input == "upload":
-                                for i, uploaded_file in enumerate(image_data_list):
-                                    file_name = f"File {i+1}"
-                                    if hasattr(uploaded_file, 'name'):
-                                        file_name = uploaded_file.name
-                                    preprocess_bar.progress((i + 1) / len(image_data_list), text=f"Loading {file_name}...")
-                                    file_type = uploaded_file.type
-                                    if file_type == "application/pdf":
-                                        try:
-                                            doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
-                                            for page_num, page in enumerate(doc):
-                                                pix = page.get_pixmap(dpi=200)
-                                                img_bytes = pix.tobytes("png")
-                                                images_to_process.append(img_bytes)
-                                                image_names.append(f"{file_name} (Page {page_num + 1})")
-                                            doc.close()
-                                        except Exception as e:
-                                            st.warning(f"Could not read PDF {file_name}. Skipping. Error: {e}")
-                                    else:  # It's a JPG, PNG, etc.
+                                if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
+                                    try:
+                                        uploaded_file = st.session_state.captured_image_data
                                         uploaded_file.seek(0)
                                         img_bytes = uploaded_file.getvalue()
                                         images_to_process.append(img_bytes)
-                                        image_names.append(file_name)
-                            preprocess_bar.empty()
+                                        image_names.append("Captured_Image.jpg")
+                                        preprocess_bar.progress(1.0, text="Loaded 1 captured image.")
+                                    except Exception as e:
+                                        st.warning(f"Could not load camera image. Error: {e}")
+                                elif st.session_state.active_input == "upload":
+                                    for i, uploaded_file in enumerate(image_data_list):
+                                        file_name = f"File {i+1}"
+                                        if hasattr(uploaded_file, 'name'):
+                                            file_name = uploaded_file.name
+                                        preprocess_bar.progress((i + 1) / len(image_data_list), text=f"Loading {file_name}...")
+                                        file_type = uploaded_file.type
+                                        if file_type == "application/pdf":
+                                            try:
+                                                doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+                                                for page_num, page in enumerate(doc):
+                                                    pix = page.get_pixmap(dpi=200)
+                                                    img_bytes = pix.tobytes("png")
+                                                    images_to_process.append(img_bytes)
+                                                    image_names.append(f"{file_name} (Page {page_num + 1})")
+                                                doc.close()
+                                            except Exception as e:
+                                                st.warning(f"Could not read PDF {file_name}. Skipping. Error: {e}")
+                                        else:  # It's a JPG, PNG, etc.
+                                            uploaded_file.seek(0)
+                                            img_bytes = uploaded_file.getvalue()
+                                            images_to_process.append(img_bytes)
+                                            image_names.append(file_name)
+                                preprocess_bar.empty()
 
-                            total_images_to_process = len(images_to_process)
-                            if total_images_to_process > 0:
-                                my_bar = st.progress(0, text=f"Starting AI extraction for {total_images_to_process} image(s)...")
-                                for i, img_bytes in enumerate(images_to_process):
-                                    file_name = image_names[i]
-                                    my_bar.progress((i + 1) / total_images_to_process, text=f"Processing {i+1}/{total_images_to_process}: {file_name}")
-                                    json_string = get_json_from_image(img_bytes, MY_API_KEY)
-                                    if json_string:
-                                        try:
-                                            item_object = json.loads(json_string)
-                                            all_results.append(item_object)
-                                        except Exception as e:
-                                            st.warning(f"File {file_name} processing failed. AI returned invalid JSON. Error: {e}")
-                                    else:
-                                        st.warning(f"File {file_name} processing failed. AI returned no data.")
-                                my_bar.empty()
+                                total_images_to_process = len(images_to_process)
+                                if total_images_to_process > 0:
+                                    my_bar = st.progress(0, text=f"Starting AI extraction for {total_images_to_process} image(s)...")
+                                    for i, img_bytes in enumerate(images_to_process):
+                                        file_name = image_names[i]
+                                        my_bar.progress((i + 1) / total_images_to_process, text=f"Processing {i+1}/{total_images_to_process}: {file_name}")
+                                        json_string = get_json_from_image(img_bytes, MY_API_KEY)
+                                        if json_string:
+                                            try:
+                                                item_object = json.loads(json_string)
+                                                all_results.append(item_object)
+                                            except Exception as e:
+                                                st.warning(f"File {file_name} processing failed. AI returned invalid JSON. Error: {e}")
+                                        else:
+                                            st.warning(f"File {file_name} processing failed. AI returned no data.")
+                                    my_bar.empty()
 
-                            if all_results:
-                                st.session_state.result_list = all_results
-                                st.session_state.current_edit_index = 0
-                                st.session_state.extraction_done = True
-                                st.success(f"Extraction Complete! {len(all_results)} documents processed from {total_images_to_process} image(s). See results in Step 2.")
-                            else:
-                                st.error("Extraction failed. No files could be processed.")
+                                if all_results:
+                                    st.session_state.result_list = all_results
+                                    st.session_state.current_edit_index = 0
+                                    st.session_state.extraction_done = True
+                                    st.success(f"Extraction Complete! {len(all_results)} documents processed from {total_images_to_process} image(s). See results in Step 2.")
+                                else:
+                                    st.error("Extraction failed. No files could be processed.")
 
-        # --- 4. Step 2 & 3: Review, Edit, & Download ---
-        if st.session_state.extraction_done and st.session_state.result_list:
-            # [UPDATED] On-screen Visual Analysis section has been removed entirely
+    # --- 4. Step 2 & 3: Review, Edit, & Download ---
+    if st.session_state.extraction_done and st.session_state.result_list:
+        
+        with st.container(border=True):
+            st.header("Step 2: Review & Edit Data")
 
-            with st.container(border=True):
-                st.header("Step 2: Review & Edit Extracted Data")
+            # Pagination info
+            total_items = len(st.session_state.result_list)
+            current_index = st.session_state.current_edit_index
+            st.info(f"You are editing **Page {current_index + 1} of {total_items}**.")
+            current_document = st.session_state.result_list[current_index]
 
-                # Pagination info
-                total_items = len(st.session_state.result_list)
-                current_index = st.session_state.current_edit_index
-                st.info(f"You are editing **Page {current_index + 1} of {total_items}**.")
-                current_document = st.session_state.result_list[current_index]
+            # Page-level fields
+            st.subheader("Page-Level Details")
+            header_cols = st.columns(2)
+            with header_cols[0]:
+                current_document['PAGE_DATE'] = st.text_input(
+                    "Page Date",
+                    value=current_document.get('PAGE_DATE', ''),
+                    key=f"PAGE_DATE_{current_index}"
+                )
+            with header_cols[1]:
+                current_document['OPENING_PRICE'] = st.text_input(
+                    "TD5 Base: ",
+                    value=current_document.get('OPENING_PRICE', ''),
+                    key=f"OPENING_PRICE_{current_index}"
+                )
 
-                # Page-level fields
-                st.subheader("Page-Level Details")
-                header_cols = st.columns(2)
-                with header_cols[0]:
-                    current_document['PAGE_DATE'] = st.text_input(
-                        "Page Date",
-                        value=current_document.get('PAGE_DATE', ''),
-                        key=f"PAGE_DATE_{current_index}"
+            if 'saudas' not in current_document or not isinstance(current_document.get('saudas'), list):
+                current_document['saudas'] = []
+
+            # Pre-process lists to strings for editor
+            for s in current_document['saudas']:
+                if isinstance(s.get('Grades'), list):
+                    s['Grades'] = ", ".join(map(str, s['Grades']))
+                if isinstance(s.get('Rates'), list):
+                    s['Rates'] = ", ".join(map(str, s['Rates']))
+
+            st.write("---")
+            st.subheader("Sauda Entries")
+
+            is_mobile_mode = st.toggle("📱 Mobile Edit Mode", value=False, help="Switch to this mode to edit easily on phones without horizontal scrolling.")
+
+            if is_mobile_mode:
+                st.info("📝 Mobile Mode Active: Entries are shown as cards below.")
+                for i, sauda in enumerate(current_document['saudas']):
+                    with st.expander(f"Entry #{i+1} - {sauda.get('Broker', 'Unknown')}", expanded=False):
+                        # --- NEW: Base_Price Field Added ---
+                        c0 = st.columns(1)[0]
+                        current_document['saudas'][i]['Base_Price'] = c0.text_input("Base Price", sauda.get('Base_Price', ''), key=f"m_base_price_{current_index}_{i}")
+                        
+                        c1, c2 = st.columns(2)
+                        current_document['saudas'][i]['Broker'] = c1.text_input("Broker", sauda.get('Broker', ''), key=f"m_brk_{current_index}_{i}")
+                        current_document['saudas'][i]['Area'] = c2.text_input("Area", sauda.get('Area', ''), key=f"m_area_{current_index}_{i}")
+                        
+                        c3, c4 = st.columns(2)
+                        current_document['saudas'][i]['Mukkam'] = c3.text_input("Mukkam", sauda.get('Mukkam', ''), key=f"m_muk_{current_index}_{i}")
+                        current_document['saudas'][i]['Bales_Mark'] = c4.text_input("Bales Mark", sauda.get('Bales_Mark', ''), key=f"m_bm_{current_index}_{i}")
+                        
+                        c5, c6 = st.columns(2)
+                        current_document['saudas'][i]['No_of_Lorries'] = c5.number_input("Lorries", value=int(sauda.get('No_of_Lorries', 0)), key=f"m_lor_{current_index}_{i}")
+                        current_document['saudas'][i]['No_of_Bales'] = c6.text_input("Bales", str(sauda.get('No_of_Bales', '')), key=f"m_bal_{current_index}_{i}")
+
+                        current_document['saudas'][i]['Grades'] = st.text_input("Grades (comma sep)", sauda.get('Grades', ''), key=f"m_grd_{current_index}_{i}")
+                        current_document['saudas'][i]['Rates'] = st.text_input("Rates (comma sep)", sauda.get('Rates', ''), key=f"m_rts_{current_index}_{i}")
+                        current_document['saudas'][i]['Unit'] = st.text_input("Unit", sauda.get('Unit', ''), key=f"m_unt_{current_index}_{i}")
+
+            else:
+                # --- NEW: Base_Price Column Added to Config ---
+                current_document['saudas'] = st.data_editor(
+                    current_document['saudas'],
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"data_editor_{current_index}",
+                    column_config={
+                        "Base_Price": st.column_config.TextColumn("Base Price"),
+                        "Broker": st.column_config.TextColumn("Broker", required=True),
+                        "Area": st.column_config.TextColumn("Area"),
+                        "Mukkam": st.column_config.TextColumn("Mukkam"),
+                        "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
+                        "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
+                        "No_of_Bales": st.column_config.TextColumn("No. of Bales"), 
+                        "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
+                        "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
+                        "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
+                    },
+                    column_order=("Base_Price", "Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
+                )
+
+            st.write("---")
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col1:
+                st.button(
+                    "⬅️ Previous",
+                    on_click=save_and_go_prev,
+                    use_container_width=True,
+                    disabled=(current_index == 0),
+                    type="primary"
+                )
+            with col3:
+                st.button(
+                    "Next ➡️",
+                    on_click=save_and_go_next,
+                    use_container_width=True,
+                    disabled=(current_index >= total_items - 1),
+                    type="primary"
+                )
+
+            st.divider()
+
+            # --- Download & Email Section ---
+            st.subheader("Step 3: Export Options")
+
+            try:
+                full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
+            except Exception as e:
+                st.error(f"Could not prepare data for download. Error: {e}")
+                full_edited_json_text = "[]"
+
+            st.write("Select sections to include in your PDF report:")
+            dl_col1, dl_col2, dl_col3 = st.columns(3)
+            with dl_col1:
+                dl_area_summary = st.checkbox("Area-wise Lorry Summary", value=True)
+                dl_broker_summary = st.checkbox("Broker & Area-wise Lorry Summary", value=True)
+            with dl_col2:
+                dl_unit_summary = st.checkbox("Unit-Area wise Lorry Summary", value=True) 
+                dl_sauda_details = st.checkbox("Entire Sauda Details (One Table per Page)", value=True) # --- UPDATED CHECKBOX TEXT ---
+            with dl_col3:
+                include_charts = st.checkbox("Include Visual Charts", value=False)
+
+            st.write("")
+
+            if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts and not dl_unit_summary:
+                st.warning("Please select at least one section to include in the PDF.")
+                pdf_data = None
+            else:
+                pdf_data = create_pdf(
+                    full_edited_json_text,
+                    dl_area_summary,
+                    dl_broker_summary,
+                    dl_sauda_details,
+                    dl_unit_summary=dl_unit_summary, 
+                    include_charts=include_charts
+                )
+
+            # --- MODIFICATION 3: Changed to 2 columns, commented out col_whatsapp ---
+            col_download, col_email = st.columns([1, 1])
+
+            # 1. Download Button
+            with col_download:
+                if pdf_data:
+                    st.download_button(
+                        label="⬇️ Download as PDF",
+                        data=pdf_data,
+                        file_name=f"sauda_export_batch_{datetime.date.today().strftime('%Y-%m-%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        on_click=save_and_log_download
                     )
-                with header_cols[1]:
-                    current_document['OPENING_PRICE'] = st.text_input(
-                        "TD5 Base: ",
-                        value=current_document.get('OPENING_PRICE', ''),
-                        key=f"OPENING_PRICE_{current_index}"
-                    )
-
-                if 'saudas' not in current_document or not isinstance(current_document.get('saudas'), list):
-                    current_document['saudas'] = []
-
-                # Pre-process lists to strings for editor
-                for s in current_document['saudas']:
-                    if isinstance(s.get('Grades'), list):
-                        s['Grades'] = ", ".join(map(str, s['Grades']))
-                    if isinstance(s.get('Rates'), list):
-                        s['Rates'] = ", ".join(map(str, s['Rates']))
-
-                st.write("---")
-                st.subheader("Sauda Entries")
-
-                # --- MOBILE FRIENDLY TOGGLE ---
-                is_mobile_mode = st.toggle("📱 Mobile Edit Mode", value=False, help="Switch to this mode to edit easily on phones without horizontal scrolling.")
-
-                if is_mobile_mode:
-                    st.info("📝 Mobile Mode Active: Entries are shown as cards below.")
-                    for i, sauda in enumerate(current_document['saudas']):
-                        with st.expander(f"Entry #{i+1} - {sauda.get('Broker', 'Unknown')}", expanded=False):
-                            # Use regular inputs stacked for mobile
-                            c1, c2 = st.columns(2)
-                            current_document['saudas'][i]['Broker'] = c1.text_input("Broker", sauda.get('Broker', ''), key=f"m_brk_{current_index}_{i}")
-                            current_document['saudas'][i]['Area'] = c2.text_input("Area", sauda.get('Area', ''), key=f"m_area_{current_index}_{i}")
-                            
-                            c3, c4 = st.columns(2)
-                            current_document['saudas'][i]['Mukkam'] = c3.text_input("Mukkam", sauda.get('Mukkam', ''), key=f"m_muk_{current_index}_{i}")
-                            current_document['saudas'][i]['Bales_Mark'] = c4.text_input("Bales Mark", sauda.get('Bales_Mark', ''), key=f"m_bm_{current_index}_{i}")
-                            
-                            c5, c6 = st.columns(2)
-                            current_document['saudas'][i]['No_of_Lorries'] = c5.number_input("Lorries", value=int(sauda.get('No_of_Lorries', 0)), key=f"m_lor_{current_index}_{i}")
-                            # Bales is text in your logic (e.g., "105 Bls")
-                            current_document['saudas'][i]['No_of_Bales'] = c6.text_input("Bales", str(sauda.get('No_of_Bales', '')), key=f"m_bal_{current_index}_{i}")
-
-                            current_document['saudas'][i]['Grades'] = st.text_input("Grades (comma sep)", sauda.get('Grades', ''), key=f"m_grd_{current_index}_{i}")
-                            current_document['saudas'][i]['Rates'] = st.text_input("Rates (comma sep)", sauda.get('Rates', ''), key=f"m_rts_{current_index}_{i}")
-                            current_document['saudas'][i]['Unit'] = st.text_input("Unit", sauda.get('Unit', ''), key=f"m_unt_{current_index}_{i}")
-
                 else:
-                    # DEFAULT TABLE VIEW (Desktop)
-                    current_document['saudas'] = st.data_editor(
-                        current_document['saudas'],
-                        num_rows="dynamic",
-                        use_container_width=True,
-                        key=f"data_editor_{current_index}",
-                        column_config={
-                            "Broker": st.column_config.TextColumn("Broker", required=True),
-                            "Area": st.column_config.TextColumn("Area"),
-                            "Mukkam": st.column_config.TextColumn("Mukkam"),
-                            "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
-                            "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
-                            "No_of_Bales": st.column_config.TextColumn("No. of Bales"), # Changed to text per your logic
-                            "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
-                            "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
-                            "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
-                        },
-                        column_order=("Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
-                    )
+                    st.button("⬇️ Download as PDF", disabled=True, use_container_width=True)
 
-                st.write("---")
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col1:
-                    st.button(
-                        "⬅️ Previous",
-                        on_click=save_and_go_prev,
-                        use_container_width=True,
-                        disabled=(current_index == 0),
-                        type="primary"
-                    )
-                with col3:
-                    st.button(
-                        "Next ➡️",
-                        on_click=save_and_go_next,
-                        use_container_width=True,
-                        disabled=(current_index >= total_items - 1),
-                        type="primary"
-                    )
+            # 2. Email Feature
+            with col_email:
+                with st.popover("📧 Email Report", use_container_width=True):
+                    st.write("Send this report via email.")
+                    email_recipient = st.text_input("Recipient Email", placeholder="manager@example.com")
+                    if st.button("Send Email Now", type="primary"):
+                        if not pdf_data:
+                            st.error("PDF generation failed. Cannot send.")
+                        elif not email_recipient:
+                            st.warning("Please enter an email address.")
+                        else:
+                            with st.spinner("Sending email..."):
+                                success = send_email_with_pdf(
+                                    email_recipient, 
+                                    pdf_data, 
+                                    filename=f"Sauda_Report_{datetime.date.today()}.pdf"
+                                )
+                                if success:
+                                    st.success(f"✅ Report sent to {email_recipient}!")
+            
+            # 3. [NEW] WhatsApp "Share" Feature (COMMENTED OUT)
+            # with col_whatsapp:
+            #     with st.popover("💬 Share on WhatsApp", use_container_width=True):
+            #         st.write("Share report via WhatsApp.")
+            #         st.info("⚠️ **Note:** This opens WhatsApp with a message. You must **manually attach the PDF** after downloading it.")
+            #         
+            #         whatsapp_number = st.text_input(
+            #             "Recipient Phone (with country code)", 
+            #             st.session_state.whatsapp_recipient
+            #         )
+            #         st.session_state.whatsapp_recipient = whatsapp_number # Save changes
 
-                st.divider()
-
-                # --- Download & Email Section ---
-                st.subheader("Step 3: Export Options")
-
-                # Re-serialize data
-                try:
-                    full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
-                except Exception as e:
-                    st.error(f"Could not prepare data for download. Error: {e}")
-                    full_edited_json_text = "[]"
-
-                # [UPDATED] Add "Include Visual Charts" checkbox here
-                st.write("Select sections to include in your PDF report:")
-                dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
-                with dl_col1:
-                    dl_area_summary = st.checkbox("Area-wise Lorry Summary", value=True)
-                with dl_col2:
-                    dl_broker_summary = st.checkbox("Broker & Area-wise Lorry Summary", value=True)
-                with dl_col3:
-                    dl_sauda_details = st.checkbox("Entire Sauda Details", value=True)
-                with dl_col4:
-                    include_charts = st.checkbox("Include Visual Charts", value=False)  # [UPDATED]
-
-                st.write("")
-
-                # Generate PDF once for both buttons
-                if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts:
-                    st.warning("Please select at least one section to include in the PDF.")
-                    pdf_data = None
-                else:
-                    pdf_data = create_pdf(
-                        full_edited_json_text,
-                        dl_area_summary,
-                        dl_broker_summary,
-                        dl_sauda_details,
-                        include_charts=include_charts
-                    )
-
-                # Layout for Download and Email
-                col_download, col_email = st.columns([1, 1])
-
-                # 1. Download Button
-                with col_download:
-                    if pdf_data:
-                        st.download_button(
-                            label="⬇️ Download as PDF",
-                            data=pdf_data,
-                            file_name=f"sauda_export_batch_{datetime.date.today().strftime('%Y-%m-%d')}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                            on_click=save_and_log_download
-                        )
-                    else:
-                        st.button("⬇️ Download as PDF", disabled=True, use_container_width=True)
-
-                # 2. Email Feature
-                with col_email:
-                    with st.popover("📧 Email Report", use_container_width=True):
-                        st.write("Send this report via email.")
-                        email_recipient = st.text_input("Recipient Email", placeholder="manager@example.com")
-                        if st.button("Send Email Now", type="primary"):
-                            if not pdf_data:
-                                st.error("PDF generation failed. Cannot send.")
-                            elif not email_recipient:
-                                st.warning("Please enter an email address.")
-                            else:
-                                with st.spinner("Sending email..."):
-                                    success = send_email_with_pdf(
-                                        email_recipient, 
-                                        pdf_data, 
-                                        filename=f"Sauda_Report_{datetime.date.today()}.pdf"
-                                    )
-                                    if success:
-                                        st.success(f"✅ Report sent to {email_recipient}!")
-                                        # Optionally log email event here if desired
+            #         # --- UPDATED: Use IST Time helper ---
+            #         today_str = get_ist_time().strftime("%d %B, %Y at %I:%M %p IST")
+            #         
+            #         whatsapp_message = st.text_area(
+            #             "Message", 
+            #             f"Hello, here is the Jute Sauda Report for {today_str}. Please find the PDF (which I will attach manually)."
+            #         )
+            #         
+            #         if pdf_data: # Only enable if PDF is ready
+            #             cleaned_number = re.sub(r"[\s+]", "", whatsapp_number)
+            #             encoded_message = quote_plus(whatsapp_message)
+            #             whatsapp_url = f"[https://wa.me/](https://wa.me/){cleaned_number}?text={encoded_message}"
+            #             
+            #             st.link_button(
+            #                 "Open WhatsApp Chat", 
+            #                 whatsapp_url, 
+            #                 type="primary", 
+            #                 use_container_width=True
+            #             )
+            #         else:
+            #             st.button("Open WhatsApp Chat", disabled=True, use_container_width=True)
