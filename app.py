@@ -25,18 +25,35 @@ from email import encoders
 
 # --- 1. LOAD SECRETS SAFELY ---
 try:
-    # Try loading from secrets.toml first
+    # Try loading all secrets from secrets.toml first
     MY_API_KEY = st.secrets["general"]["api_key"]
+    
     MONGO_USER = st.secrets["mongo"]["username"]
     MONGO_PASSWORD = st.secrets["mongo"]["password"]
     MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
+    
+    SENDER_EMAIL = st.secrets["email"]["sender_email"]
+    SENDER_PASSWORD = st.secrets["email"]["sender_password"]
+    SMTP_SERVER = st.secrets["email"]["smtp_server"]
+    SMTP_PORT = st.secrets["email"]["smtp_port"]
+
 except Exception as e:
-    # Fallback if secrets file is missing (HARDCODED VALUES REMOVED)
+    # Fallback if secrets file is missing or a key is wrong
     st.error(f"⚠️ Secrets not found! Please check your .streamlit/secrets.toml file. Error: {e}")
     MY_API_KEY = None
     MONGO_USER = None
     MONGO_PASSWORD = None
     MONGO_CLUSTER_URL = None
+    SENDER_EMAIL = None
+    SENDER_PASSWORD = None
+    SMTP_SERVER = None
+    SMTP_PORT = None
+
+# --- FIX: Check for critical secrets and stop if missing ---
+if not MY_API_KEY or not MONGO_USER or not SENDER_EMAIL:
+    st.error("🚨 Critical secrets are missing. The app cannot continue.")
+    st.info("Please ensure your `.streamlit/secrets.toml` file is correct and has [general], [mongo], and [email] sections.")
+    st.stop() # Stop all further execution
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
@@ -4659,3 +4676,4 @@ if True:  # Replaced with if True to enable main app directly
             #             )
             #         else:
             #             st.button("Open WhatsApp Chat", disabled=True, use_container_width=True)
+
