@@ -2,8 +2,7 @@ name: Daily Report Emailer
 
 on:
   schedule:
-
-    - cron: '30 6 * * *'
+    - cron: '45 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -27,6 +26,4 @@ jobs:
           MONGO_USER: ${{ secrets.MONGO_USER }}
           MONGO_PASS: ${{ secrets.MONGO_PASS }}
           MONGO_URL: ${{ secrets.MONGO_URL }}
-          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
-          SENDER_PASS: ${{ secrets.SENDER_PASS }}
-        run: python daily_mailer.py
+          SENDER_EMAIL: ${{ se_
