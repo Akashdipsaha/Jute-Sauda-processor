@@ -16,45 +16,34 @@ import matplotlib.pyplot as plt
 import tempfile
 import os
 
-# --- NEW IMPORTS FOR EMAIL ---
+# --- NEW IMPORTS FOR EMAIL & DB STORAGE ---
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
+# --- ADDED AS REQUESTED ---
+from bson.binary import Binary 
 
+# --- 1. LOAD SECRETS SAFELY ---
 try:
-
     # Try loading from secrets.toml first
-
     MY_API_KEY = st.secrets["general"]["api_key"]
-
     MONGO_USER = st.secrets["mongo"]["username"]
-
     MONGO_PASSWORD = st.secrets["mongo"]["password"]
-
     MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
-
 except Exception:
-
     # Fallback to your hardcoded values if secrets file is missing (for safety)
-
-    MY_API_KEY = "AIzaSyCWeRY8cV44-V9cLrhj0oBi9KhKym7YvKk"
-
+    MY_API_KEY = "AIzaSyAdcy7FttGKaaHjdkqrPXxTnH5Q6eDSG9w"
     MONGO_USER = "Akashdip_Saha"
-
     MONGO_PASSWORD = "STIL@12345"
-
     MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
-
-
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
 def get_mongo_connection():
     """Establishes and returns a MongoDB client and the user collection."""
     try:
-        # Check if secrets were loaded
         if not MONGO_USER or not MONGO_PASSWORD or not MONGO_CLUSTER_URL:
             st.error("MongoDB secrets are not loaded. Cannot connect.")
             return None
@@ -70,7 +59,7 @@ def get_mongo_connection():
         st.error(f"Failed to connect to MongoDB: {e}")
         return None
 
-# --- [NEW] Helper to get IST Time ---
+# --- Helper to get IST Time ---
 def get_ist_time():
     """Returns a datetime object for the current time in IST."""
     try:
@@ -80,8 +69,7 @@ def get_ist_time():
         # Fallback if timezone fails
         return datetime.datetime.now()
 
-
-# --- NEW FUNCTION: Send Email ---
+# --- FUNCTION: Send Email (Directly from App) ---
 def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf"):
     """
     Sends the generated PDF via email using credentials from st.secrets.
@@ -96,14 +84,13 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
         st.error("❌ Email secrets not configured! Check .streamlit/secrets.toml")
         return False
 
-    # --- UPDATED: Use IST Time helper ---
     now_ist = get_ist_time()
     today_str = now_ist.strftime("%d %B, %Y")
     subject_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
 
     # Create Email Object
     msg = MIMEMultipart()
-    msg['From'] = f"Jute OCR System <{sender_email}>" # Shows a nice name
+    msg['From'] = f"Jute OCR System <{sender_email}>"
     msg['To'] = recipient_email
     msg['Subject'] = f"📄 Daily Jute Sauda Report - {subject_str}"
     
@@ -125,7 +112,6 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
     </html>
     """
     
-    # Attach HTML Body
     msg.attach(MIMEText(html_body, 'html'))
 
     # Attach PDF
@@ -148,73 +134,89 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
         st.error(f"Failed to send email: {e}")
         return False
 
-# --- PDF Download & Auto-Save Function ---
-def save_and_log_download():
+# --- UPDATED: DOWNLOAD HANDLER (Merged with your requested logic) ---
+def save_and_log_download(event_name="PDF Download", details="User downloaded the Sauda Report PDF", pdf_data=None, file_name_for_db=None):
     """
-    1. Logs the PDF download event to MongoDB.
-    2. AUTOMATICALLY SAVES the current session data to MongoDB (Sauda Data).
+    1. Logs the PDF download event.
+    2. AUTOMATICALLY SAVES the current JSON session data to 'sauda_data'.
+    3. [NEW] STORES the PDF Binary to 'daily_pdf_storage' for the daily emailer.
     """
-    # --- 1. Log the Download Event ---
-    try:
-        users_col = get_mongo_connection()
-        if users_col is not None:
-            db = users_col.database
-            logs_col = db["download_logs"] # New collection for logs
-            
-            # --- UPDATED: Use IST Time helper ---
-            now_ist = get_ist_time()
-            now_utc = now_ist.astimezone(datetime.timezone.utc)
+    users_col = get_mongo_connection()
+    
+    if users_col is None:
+        print("MongoDB connection failed, skipping save.")
+        return
 
-            log_entry = {
-                "event": "PDF Download",
-                "username": st.session_state.get("username", "Unknown"),
-                "timestamp_utc": now_utc,
-                "download_date_ist": now_ist.strftime("%Y-%m-%d"), # Separate Date
-                "download_time_ist": now_ist.strftime("%H:%M:%S IST"), # Separate Time
-                "details": "User downloaded the Sauda Report PDF"
-            }
-            logs_col.insert_one(log_entry)
-            print(f"Log saved: {log_entry}")
+    db = users_col.database
+    now_ist = get_ist_time()
+    now_utc = now_ist.astimezone(datetime.timezone.utc)
+
+    # --- 1. Log the Download Event (Existing Logic) ---
+    try:
+        logs_col = db["download_logs"]
+        log_entry = {
+            "event": event_name,
+            "username": st.session_state.get("username", "Unknown"),
+            "timestamp_utc": now_utc,
+            "download_date_ist": now_ist.strftime("%Y-%m-%d"),
+            "download_time_ist": now_ist.strftime("%H:%M:%S IST"),
+            "details": details
+        }
+        logs_col.insert_one(log_entry)
     except Exception as e:
         print(f"Failed to log download event: {e}")
 
-    # --- 2. Auto-Save Data to MongoDB ---
+    # --- 2. Auto-Save JSON Data to MongoDB (Existing Logic) ---
     try:
         if 'result_list' in st.session_state and st.session_state.result_list:
-            users_col = get_mongo_connection()
-            if users_col is not None:
-                db = users_col.database
-                data_col = db["sauda_data"] # Collection for the actual data
-                # Prepare batch with metadata
-                batch_data = []
-                
-                # --- UPDATED: Use IST Time helper ---
-                now_ist = get_ist_time()
-                now_utc = now_ist.astimezone(datetime.timezone.utc)
-
-                for doc in st.session_state.result_list:
-                    doc_copy = doc.copy()
-                    doc_copy['uploaded_at_utc'] = now_utc
-                    doc_copy['uploaded_at_ist'] = now_ist.isoformat()
-                    doc_copy['uploaded_by'] = st.session_state.get("username", "Unknown")
-                    batch_data.append(doc_copy)
-                data_col.insert_many(batch_data)
-                st.toast("Data automatically saved to Database!", icon="💾")
-                print("Data auto-saved to MongoDB.")
+            data_col = db["sauda_data"]
+            batch_data = []
+            for doc in st.session_state.result_list:
+                doc_copy = doc.copy()
+                doc_copy['uploaded_at_utc'] = now_utc
+                doc_copy['uploaded_at_ist'] = now_ist.isoformat()
+                doc_copy['uploaded_by'] = st.session_state.get("username", "Unknown")
+                batch_data.append(doc_copy)
+            data_col.insert_many(batch_data)
+            st.toast("Data automatically saved to Database!", icon="💾")
     except Exception as e:
         print(f"Auto-save failed: {e}")
         st.toast(f"Auto-save failed: {e}", icon="⚠️")
+
+    # --- 3. [ADDED] Save PDF Binary to DB (Your Requested Logic) ---
+    if pdf_data is not None:
+        try:
+            reports_col = db["daily_pdf_storage"]
+            
+            # Use provided filename or generate default
+            fname = file_name_for_db if file_name_for_db else f"Report_{now_ist.strftime('%Y%m%d_%H%M%S')}.pdf"
+            
+            report_doc = {
+                "upload_date": now_ist.strftime("%Y-%m-%d"), # Key for querying later
+                "upload_time": now_ist.strftime("%H:%M:%S"),
+                "uploaded_by": st.session_state.get("username", "Unknown"),
+                "filename": fname,
+                "pdf_data": Binary(pdf_data), # Store raw bytes as Binary
+                "processed": False # Flag for the emailer script
+            }
+            reports_col.insert_one(report_doc)
+            print("PDF Binary saved to MongoDB successfully.")
+            st.toast("PDF queued for daily email!", icon="📧")
+        except Exception as e:
+            print(f"Failed to save PDF binary to DB: {e}")
+            st.toast(f"Failed to queue PDF: {e}", icon="❌")
+
 
 # --- Corporate CSS Theme ---
 corporate_css = """
 <style>
 :root {
-    --color-primary: #016B61;        /* Dark Teal */
-    --color-accent: #70B2B2;         /* Medium Teal */
+    --color-primary: #016B61;       /* Dark Teal */
+    --color-accent: #70B2B2;        /* Medium Teal */
     --color-light-accent: #9ECFD4; /* Light Teal */
     --color-highlight: #E5E9C5;     /* Pale Green-Yellow */
-    --color-bg: #F8F9F0;             /* Very Light version of highlight */
-    --color-dark: #003B36;           /* Very Dark Teal for Text */
+    --color-bg: #F8F9F0;            /* Very Light version of highlight */
+    --color-dark: #003B36;          /* Very Dark Teal for Text */
     --radius: 12px;
     --shadow: 0 4px 14px rgba(0,0,0,0.06);
     --shadow-hover: 0 8px 24px rgba(112,178,178,0.35); /* From --color-accent */
@@ -469,7 +471,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = True # Forced login
 if 'username' not in st.session_state:
     st.session_state.username = "Admin" # Default user
-# --- [END NEW] ---
 
 if 'reset_counter' not in st.session_state:
     st.session_state.reset_counter = 0
@@ -487,59 +488,45 @@ if 'captured_image_data' not in st.session_state:
     st.session_state.captured_image_data = None
 if 'row_to_delete_input' not in st.session_state:
     st.session_state.row_to_delete_input = 1
-# NOTE: show_charts no longer used in UI per requirement.
 if 'show_charts' not in st.session_state:
     st.session_state.show_charts = False
-# NEW: Session state for WhatsApp number
-if 'whatsapp_recipient' not in st.session_state:
-    st.session_state.whatsapp_recipient = "+91" # Default to India country code
 
 # --- [PDF REPORT GENERATION] ---
-# [UPDATED] Reverted Sauda Details to one table per page, kept Base Price summaries
 def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, dl_unit_summary=False, include_charts=False):
     """
     Creates a structured, multi-page PDF report from a JSON string.
-    Uses standard FPDF methods to ensure compatibility and robust tables.
-    Appends Matplotlib charts at the end if include_charts=True.
     """
 
     class PDF(FPDF):
         def header(self):
-            # --- UPDATED: Main Title and Timestamp Header ---
             if self.page_no() == 1: 
-                # --- On PAGE 1: Show the large, centered header ---
                 # 1. Main Title
                 self.set_font('Arial', 'B', 18)
                 self.set_text_color(0, 0, 0) # Black
-                self.cell(0, 10, "Sauda Report", 0, 1, 'C') # Centered, new line
+                self.cell(0, 10, "Sauda Report", 0, 1, 'C')
                 
                 # 2. Timestamp
                 now_ist = get_ist_time()
                 today_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
                 self.set_font('Arial', 'B', 14)
                 self.set_text_color(0, 0, 0) # Black
-                self.cell(0, 10, today_str, 0, 1, 'C') # Centered, new line
+                self.cell(0, 10, today_str, 0, 1, 'C')
 
                 # Add padding after header
                 self.ln(10)
             
             elif self.page_no() > 1:
-                # --- On ALL OTHER PAGES: Show a smaller, standard header ---
                 self.set_font('Arial', 'I', 9)
                 self.set_text_color(128)
                 now_ist = get_ist_time()
                 today_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
-                # Position date to the left
                 self.cell(0, 10, f"Report Date: {today_str}", 0, 0, 'L')
-                self.ln(10) # Add padding after header
-
+                self.ln(10)
 
         def footer(self):
-            # --- NEW: Page Number ONLY in footer ---
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
             self.set_text_color(128)
-            # Position page number to the right
             self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'R')
 
     pdf = PDF()
@@ -556,7 +543,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
         pdf.cell(0, 10, 'No document data to generate PDF.', 0, 1, 'C')
         return pdf.output(dest='S').encode('latin-1')
 
-    # We'll collect chart temp image paths to delete later
     temp_images = []
 
     try:
@@ -565,11 +551,10 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
             data_list = [data_list]
 
         # --- Part 1: Generate Summary Data ---
-        # --- Data structure segregated by Base Price ---
         area_summary = {}     # {"Base_Price": {"Area": count}}
         broker_summary = {}   # {"Base_Price": {"Broker": {"total_lorries": count, "area_breakdown": {"Area": count}}}}
         unit_summary = {}     # {"Base_Price": {"Unit": {"Area": count}}}
-        base_price_summary = {}     # {"Base_Price": count}
+        base_price_summary = {}    # {"Base_Price": count}
         
         grand_total_lorries = 0
         grand_total_unit_lorries = 0
@@ -585,7 +570,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     if broker_name is None or str(broker_name).strip() == "":
                         broker_name = 'UNKNOWN'
                     
-                    # --- NEW: Get Base_Price ---
                     base_price_val = sauda.get('Base_Price', 'N/A')
                     if base_price_val is None or str(base_price_val).strip() == "":
                         base_price_val = 'N/A'
@@ -596,7 +580,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     except (ValueError, TypeError):
                         lorries = 0
                     
-                    # Init base_price dicts if not present
                     if base_price_val not in area_summary:
                         area_summary[base_price_val] = {}
                     if base_price_val not in broker_summary:
@@ -604,21 +587,16 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     if base_price_val not in unit_summary:
                         unit_summary[base_price_val] = {}
 
-                    # Area Summary
                     area_summary[base_price_val][area] = area_summary[base_price_val].get(area, 0) + lorries
                     
-                    # Broker Summary
                     if broker_name not in broker_summary[base_price_val]:
                         broker_summary[base_price_val][broker_name] = {"total_lorries": 0, "area_breakdown": {}}
                     broker_summary[base_price_val][broker_name]["total_lorries"] += lorries
                     broker_summary[base_price_val][broker_name]["area_breakdown"][area] = broker_summary[base_price_val][broker_name]["area_breakdown"].get(area, 0) + lorries
                     
-                    # Base Price Summary
                     base_price_summary[base_price_val] = base_price_summary.get(base_price_val, 0) + lorries
+                    grand_total_lorries += lorries
 
-                    grand_total_lorries += lorries # Grand total
-
-                    # --- UNIT PARSING LOGIC ---
                     raw_unit_str = sauda.get('Unit', '')
                     if raw_unit_str:
                         matches = re.findall(r"([A-Za-z0-9]+)\s*[-:]\s*(\d+)", str(raw_unit_str))
@@ -632,7 +610,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                                     unit_summary[base_price_val][mill_code] = {}
                                 
                                 unit_summary[base_price_val][mill_code][area] = unit_summary[base_price_val][mill_code].get(area, 0) + u_count
-                                grand_total_unit_lorries += u_count # Grand total for units
+                                grand_total_unit_lorries += u_count
                             except ValueError:
                                 pass
 
@@ -640,7 +618,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
         if dl_area_summary or dl_broker_summary or dl_unit_summary:
             pdf.add_page()
             
-            # --- NEW ORDER: Area Summary First ---
             if dl_area_summary:
                 pdf.set_font("Arial", 'B', 16)
                 pdf.set_text_color(0, 0, 0)
@@ -652,9 +629,9 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 col_width_pct = 45
 
                 for base_price_key, basis_area_summary in sorted(area_summary.items()):
-                    if pdf.get_y() > 240: pdf.add_page() # Page break check
+                    if pdf.get_y() > 240: pdf.add_page()
                     pdf.set_font("Arial", 'B', 12)
-                    pdf.set_fill_color(240, 240, 240) # Lighter grey for sub-header
+                    pdf.set_fill_color(240, 240, 240)
                     pdf.cell(0, 8, f"Base Price: {base_price_key}", 1, 1, 'L', fill=True)
 
                     pdf.set_font("Arial", 'B', 12)
@@ -675,13 +652,12 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.cell(190, 10, "No lorry data found for this base price.", 1, 1, 'C')
 
                     pdf.set_font("Arial", 'B', 10)
-                    pdf.cell(col_width_area, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(col_width_area, 8, 'Total Number of Lorry(s)', 1, 0, 'C')
                     pdf.cell(col_width_count, 8, str(basis_total_lorries), 1, 0, 'C')
                     pdf.cell(col_width_pct, 8, '100.00%', 1, 1, 'R')
                     pdf.ln(5)
                 pdf.ln(5)
 
-            # --- NEW ORDER: Broker Summary Second ---
             if dl_broker_summary:
                 if pdf.get_y() > 200: pdf.add_page()
                 pdf.set_font("Arial", 'B', 16)
@@ -731,7 +707,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         h2 = pdf.get_y() - start_y
                         row_height = max(h1, h2, 6)
 
-                        if start_y + row_height > 260: # Smaller threshold for footer
+                        if start_y + row_height > 260:
                             pdf.add_page()
                             start_y = pdf.get_y()
 
@@ -750,12 +726,11 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.set_y(start_y + row_height)
 
                     pdf.set_font("Arial", 'B', 10)
-                    pdf.cell(col_width_broker + col_width_breakdown, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(col_width_broker + col_width_breakdown, 8, 'Total Number of Lorry(s)', 1, 0, 'C')
                     pdf.cell(col_width_total, 8, str(basis_total_lorries), 1, 1, 'C')
                     pdf.ln(5)
                 pdf.ln(5)
 
-            # --- NEW ORDER: Unit-Area Summary Third ---
             if dl_unit_summary:
                 if pdf.get_y() > 200: pdf.add_page()
                 
@@ -832,12 +807,11 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.set_y(start_y + row_height)
 
                     pdf.set_font("Arial", 'B', 10)
-                    pdf.cell(col_width_unit + col_width_breakdown, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(col_width_unit + col_width_breakdown, 8, 'Total Number of Lorry(s)', 1, 0, 'C')
                     pdf.cell(col_width_total, 8, str(basis_total_unit_lorries), 1, 1, 'C')
                     pdf.ln(5)
                 pdf.ln(5)
             
-            # --- NEW ORDER: Base Price Summary Last ---
             if pdf.get_y() > 220: pdf.add_page()
             pdf.set_font("Arial", 'B', 16)
             pdf.cell(0, 10, 'Base Price-wise Lorry Summary', 0, 1, 'C')
@@ -851,37 +825,32 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 pdf.cell(100, 8, f' {safe_txt(base_price_key)}', 1, 0, 'L')
                 pdf.cell(90, 8, str(count), 1, 1, 'C')
             pdf.set_font("Arial", 'B', 10)
-            pdf.cell(100, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+            pdf.cell(100, 8, 'Total Number of Lorry(s)', 1, 0, 'C')
             pdf.cell(90, 8, str(grand_total_lorries), 1, 1, 'C')
             pdf.ln(10)
 
 
-        # --- Part 3: Create Data Pages (REVERTED TO ONE TABLE PER PAGE) ---
+        # --- Part 3: Create Data Pages ---
         if dl_sauda_details:
-            # --- NEW: Define Columns with Base_Price ---
             col_widths = {
                 "Base_Price": 18, "Broker": 32, "Area": 20, "Mukkam": 20, "Bales_Mark": 18, 
                 "No_of_Lorries": 12, "No_of_Bales": 12, "Grades": 20, "Rates": 20, "Unit": 18 
             }
             headers = ["Base Price", "Broker", "Area", "Mukkam", "Bales Mark", "Lorries", "Bales", "Grades", "Rates", "Unit"]
             header_keys = ["Base_Price", "Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit"]
-            # Total width = 190
-
-            # --- REVERTED to looping by page, not base_price ---
+            
             for i, page_data in enumerate(data_list):
                 pdf.add_page()
                 
-                # --- HEADER FOR THIS PAGE (Title updated) ---
                 pdf.set_text_color(0, 0, 0)
                 pdf.set_font("Arial", 'B', 16)
-                pdf.cell(0, 10, 'Sauda Details', 0, 1, 'C') # --- TITLE CHANGED ---
+                pdf.cell(0, 10, 'Sauda Details', 0, 1, 'C')
                 pdf.ln(2)
                 pdf.set_font("Arial", 'B', 10)
                 pdf.cell(95, 8, f"Page Date: {page_data.get('PAGE_DATE', 'N/A')}", 0, 0, 'L')
                 pdf.cell(95, 8, f"TD5 Base Price: {page_data.get('OPENING_PRICE', 'N/A')}", 0, 1, 'R')
                 pdf.ln(5)
                 
-                # --- TABLE HEADERS ---
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_fill_color(230, 230, 230)
                 for j, header in enumerate(headers):
@@ -889,27 +858,25 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     pdf.cell(col_widths[key], 7, header, 1, 0, 'C', fill=True)
                 pdf.ln()
 
-                # --- TABLE ROWS ---
                 pdf.set_font("Arial", '', 8)
                 
                 saudas_list = page_data.get('saudas', [])
-                page_total_lorries = 0 # --- NEW: Initialize page total ---
+                page_total_lorries = 0 
 
                 if not saudas_list:
                     pdf.cell(190, 10, "No Sauda entries found for this page.", 1, 1, 'C')
 
-                # Iterate rows in this page
                 for sauda in saudas_list:
                     try:
                         page_total_lorries += int(sauda.get('No_of_Lorries', 0) or 0)
                     except ValueError:
-                        pass # Ignore if No_of_Lorries is not a number
+                        pass 
 
                     grades_str = ", ".join(map(str, sauda.get('Grades', []))) if isinstance(sauda.get('Grades'), list) else str(sauda.get('Grades', ''))
                     rates_str = ", ".join(map(str, sauda.get('Rates', []))) if isinstance(sauda.get('Rates'), list) else str(sauda.get('Rates', ''))
                     
                     sauda_data = {
-                        "Base_Price": str(sauda.get('Base_Price', '')), # Add Base_Price to data
+                        "Base_Price": str(sauda.get('Base_Price', '')),
                         "Broker": str(sauda.get('Broker', '')),
                         "Area": str(sauda.get('Area', '') or ''),
                         "Mukkam": str(sauda.get('Mukkam', '') or ''),
@@ -924,7 +891,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     start_x = pdf.get_x()
                     start_y = pdf.get_y()
 
-                    # Calc Max Height
                     pdf.set_text_color(255, 255, 255)
                     max_h = 6
                     current_x_temp = start_x
@@ -937,10 +903,8 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         if h > max_h: max_h = h
                         current_x_temp += col_widths[key]
 
-                    # Page Break Check
-                    if start_y + max_h > 260: # 260 to leave room for footer+header
+                    if start_y + max_h > 260: 
                         pdf.add_page()
-                        # Re-print Header
                         pdf.set_text_color(0, 0, 0)
                         pdf.set_font("Arial", 'B', 9)
                         pdf.set_fill_color(230, 230, 230)
@@ -951,34 +915,30 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.set_font("Arial", '', 8)
                         start_y = pdf.get_y()
 
-                    # Draw Content
                     pdf.set_text_color(0, 0, 0)
                     current_x = start_x
                     for key in header_keys:
                         txt = safe_txt(sauda_data[key])
-                        align = 'C' if key in ['No_of_Lorries', 'No_of_Bales', 'Base_Price'] else 'L' # Center Base_Price too
+                        align = 'C' if key in ['No_of_Lorries', 'No_of_Bales', 'Base_Price'] else 'L'
                         pdf.set_xy(current_x, start_y)
                         pdf.multi_cell(col_widths[key], 6, txt, border=0, align=align)
                         pdf.rect(current_x, start_y, col_widths[key], max_h)
                         current_x += col_widths[key]
                     pdf.set_y(start_y + max_h)
                 
-                # --- NEW: Add Page Total Row ---
                 if saudas_list:
                     pdf.set_font("Arial", 'B', 9)
-                    # Calculate widths
                     label_width = col_widths['Base_Price'] + col_widths['Broker'] + col_widths['Area'] + col_widths['Mukkam'] + col_widths['Bales_Mark']
                     lorry_width = col_widths['No_of_Lorries']
                     empty_width = col_widths['No_of_Bales'] + col_widths['Grades'] + col_widths['Rates'] + col_widths['Unit']
                     
-                    pdf.cell(label_width, 8, 'Total Number of Lorry(s)', 1, 0, 'C') # --- UNIFIED LABEL ---
+                    pdf.cell(label_width, 8, 'Total Number of Lorry(s)', 1, 0, 'C')
                     pdf.cell(lorry_width, 8, str(page_total_lorries), 1, 0, 'C')
-                    pdf.cell(empty_width, 8, '', 1, 1, 'C') # Empty cell for remaining columns
+                    pdf.cell(empty_width, 8, '', 1, 1, 'C')
 
 
-        # --- Part 4: Append Charts at End (if include_charts) ---
+        # --- Part 4: Append Charts at End ---
         if include_charts:
-            # Build flat list of all saudas
             all_saudas_flat = []
             for doc in data_list:
                 if 'saudas' in doc and isinstance(doc['saudas'], list):
@@ -986,12 +946,10 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
 
             if all_saudas_flat:
                 df = pd.DataFrame(all_saudas_flat)
-                # Clean types
                 df['No_of_Lorries'] = pd.to_numeric(df.get('No_of_Lorries', 0), errors='coerce').fillna(0)
                 df['Area'] = df.get('Area', '').fillna('Unknown').replace('', 'Unknown')
                 df['Broker'] = df.get('Broker', '').fillna('Unknown').replace('', 'Unknown')
 
-                # Chart 1: Area-wise Lorry Distribution
                 try:
                     area_data = df.groupby('Area')['No_of_Lorries'].sum().sort_values(ascending=False)
                     fig1 = plt.figure(figsize=(8, 5))
@@ -1000,7 +958,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     ax1.set_title('Area-wise Lorry Distribution')
                     ax1.set_xlabel('Area')
                     ax1.set_ylabel('Total Lorries')
-                    # [FIX] Slight rotation for Areas if they get too long
                     ax1.tick_params(axis='x', rotation=45) 
                     fig1.tight_layout()
                     tmp1 = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
@@ -1010,7 +967,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 except Exception as e:
                     print(f"Failed to generate Area-wise chart: {e}")
 
-                # Chart 2: Broker-wise Lorry Summary (Stacked by Area)
                 try:
                     pivot = df.pivot_table(index='Broker', columns='Area', values='No_of_Lorries', aggfunc='sum', fill_value=0)
                     fig2 = plt.figure(figsize=(9, 6))
@@ -1028,10 +984,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     ax2.set_xlabel('Broker')
                     ax2.set_ylabel('Total Lorries')
                     ax2.legend(title='Area', bbox_to_anchor=(1.04, 1), loc='upper left')
-                    
-                    # [FIX] Vertical rotation for Broker names
                     ax2.tick_params(axis='x', rotation=90) 
-                    
                     fig2.tight_layout()
                     tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
                     fig2.savefig(tmp2.name, dpi=200)
@@ -1040,7 +993,6 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 except Exception as e:
                     print(f"Failed to generate Broker-wise stacked chart: {e}")
 
-                # Append images to PDF
                 for img_path in temp_images:
                     try:
                         pdf.add_page()
@@ -1064,61 +1016,17 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
 
     return pdf.output(dest='S').encode('latin-1')
 
-def create_text_report(json_text):
-    """
-    Creates a structured, report-style TXT file from a JSON string.
-    """
-    report_string = ""
-    if not json_text or json_text.strip() == "[]":
-        return "No document data to generate text report."
-    try:
-        data_list = json.loads(json_text)
-        if not isinstance(data_list, list):
-            data_list = [data_list]
-        for i, data_dict in enumerate(data_list):
-            report_string += f"Extracted Sauda Data (Image {i+1})\n"
-            report_string += "=================================\n\n"
-            try:
-                report_string += f"Page Date:\n  {data_dict.get('PAGE_DATE', 'N/A')}\n\n"
-                report_string += f"TD5 Base Price:\n  {data_dict.get('OPENING_PRICE', 'N/A')}\n\n"
-                if 'saudas' in data_dict and data_dict['saudas']:
-                    df = pd.DataFrame(data_dict['saudas'])
-                    sauda_list = df.to_dict(orient='records')
-                    for j, sauda in enumerate(sauda_list):
-                        report_string += f"--- Sauda Entry {j+1} ---\n"
-                        for key, value in sauda.items():
-                            if value is not None and str(value).strip() != "":
-                                key_name = str(key).replace('_', ' ').title()
-                                if isinstance(value, list):
-                                    value_str = ", ".join(map(str, value))
-                                else:
-                                    value_str = str(value)
-                                report_string += f"{key_name}:\n  {value_str}\n\n"
-                        report_string += "\n"
-                else:
-                    report_string += "No sauda entries found for this page.\n\n"
-            except Exception:
-                st.warning(f"Document {i+1} JSON structure is complex. TXT will show raw data.")
-                report_string += json.dumps(data_dict, indent=2) + "\n\n"
-            report_string += "\n\n"
-    except Exception as e:
-        print(f"Could not convert JSON to table for TXT, falling back. Error: {e}")
-        report_string = json_text
-    return report_string
-
 # --- [AI EXTRACTION LOGIC] ---
 @st.cache_data(show_spinner=False)
 def get_json_from_image(image_bytes, api_key):
     """
     Sends the image and a specialized prompt to the Gemini API.
-    This new prompt is for "Sauda" (deal) entries.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # --- [NEW SAUDA PROMPT - V11 (Base_Price)] ---
         prompt_text = """
 You are a specialized Data Extraction Engine for handwritten "Jute Sauda" (deal) ledgers. Your ONLY task is to analyze an image of a ledger page and convert ALL entries on that page into a **single, structured JSON object**.
 
@@ -3975,15 +3883,6 @@ Broker Code	Broker
 20000055	MD. ABDUL KARIM
 20000065	BROTHERS ENTERPRISE
 
-AREA_GRP    AREA_GRP_DESC
-AS  ASSAM
-BD  BANGLADESH
-BR  BIHAR
-NR  NORTHERN
-OD  ODISHA
-SB  SOUTH BENGAL
-SN  SEMI NORTHERN
-
 **MAPPING TABLE:**
 * **AS (ASSAM):**
     * AS001: FAKIRAGRAM, GOSSAIGAON, GUWAHATI, HOWLY, SARBHOG, TARABARI
@@ -4027,7 +3926,6 @@ SN  SEMI NORTHERN
     * SN007 (LOOSE): BALURGHAT-L, GANGARAMPUR-L
     * SN008: BALURGHAT, RAMGANJ, SRIGHAR
 
-
 **CRITICAL EXTRACTION RULES:**
 
 1.  **Page-Level Data:** First, find the main data for the *entire page*.
@@ -4044,36 +3942,37 @@ SN  SEMI NORTHERN
         * If no base price has appeared yet on the page, use the Page `OPENING_PRICE` as the first Base Price.
     * **Broker:** The broker name (e.g., "Rakesh Ghoshal").
     * **Mukkam:** The location name (e.g., "SINGUR", "HARIPAL"). Use the reference list to correct spelling. If no Mukkam is listed, set to `null`.
-    * **Bales_Mark & Area Logic (STRICT RULES):**
-        * Look at the *original text* of the mark (e.g., "SB", "LA", "BH"):
+    * **Area Logic (STRICT RULES):**
+        * Look at the *original text* of the mark/area code (e.g., "SB", "LA", "BH"):
             * `SB` or `SB (Loose)` -> `Area` **MUST** be `"SOUTH BENGAL"`.
             * `BH` or `BH (Loose)` -> `Area` **MUST** be `"BIHAR"`.
             * `LA` or `LA (Loose)` -> `Area` **MUST** be `"ASSAM"`.
         * **Rule 2 (Mukkam Map):** If none of the above codes are present, look up the Area based on the identified `Mukkam` using the reference list.
         * **Rule 3 (Continuation):** If a line is a continuation (starts with "-"), copy the `Area` from the line above.
         * **Rule 4 (Default):** If no area is found, set to `null`.
-        * **Bales_Mark Value:**
-            * If `(Loose)` is written (e.g., `SB (Loose)`), `Bales_Mark` **MUST** be `"Loose"`.
-            * If the mark is `SB` (and not loose), `Bales_Mark` **MUST** be `"loose"`.
-            * If the mark is `BH`, `LA`, or any other text (and not loose), `Bales_Mark` **MUST** be `""` (an empty string).
     * **No_of_Lorries:** The number *before* the "x" (e.g., "5x95" or "2x105 Qtls" -> 2). Must be a **number**.
     * **No_of_Bales:** The number *after* the "x" (e.g., "5x95", "2x105 Qtls", "2x105 Bls").
         * **CRITICAL LOGIC:** You must include the unit ("Qtls" or "Bls" nothing else).
         * If it is written as "105 Qtls", output `"105 Qtls"`.
         * If it is written as "105 Bls", output `"105 Bls"`.
         * If it is written ONLY as number (e.g. "105") with no unit, you MUST append "Bls". Output `"105 Bls"`.
+    * **Bales_Mark Logic (DEPENDS ON QUANTITY):**
+        * **CRITICAL:** Check the `No_of_Bales` value you just extracted.
+        * If `No_of_Bales` contains **"Qtls"** -> `Bales_Mark` **MUST** be `"Loose"`.
+        * If `No_of_Bales` contains **"Bls"** -> `Bales_Mark` **MUST** be `""` (empty string).
     * **Grades:** The grade numbers (e.g., "5/6", "4/5/6/SD").
         * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of strings**.
         * "4/5/6" -> `["TD4", "TD5", "TD6"]`
         * "5/6" -> `["TD5", "TD6"]`
         * "5/6/SD" -> `["TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
-        * "4G/5/6/SD" -> `["TD4", "TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
+        * "4/5/6/SD" -> `["TD4", "TD5", "TD6", "TD5D"]` (CRITICAL: SD is TD5D)
     * **Rates:** The list of rates (e.g., "10400/10100", "9800/9600/9750").
         * **CRITICAL LOGIC:** You **MUST** translate these into a **JSON array of numbers**.
         * "10400/10100" -> `[10400, 10100]`
         * "9800/9600/9750" -> `[9800, 9600, 9750]`
     * **Unit:** The mill codes (e.g., "IJM" "SHM", "GJM", "SKT") AND the numbers written below them.
-        * **CRITICAL LOGIC:** Combine them into a single string (e.g., "IJM - 5, SKT - 2, HJM - 3").
+        * **STRICT VOCABULARY:** You are ONLY allowed to recognize the following units: **SKT, IJM, GJM, HML, SHM**. If the text looks like something else, try to map it to one of these or ignore it. Do NOT output any other unit codes.
+        * **CRITICAL LOGIC:** Combine them into a single string (e.g., "IJM - 5, SKT - 2").
         * **SUMMATION RULE:** The numbers assigned to each mill MUST sum up to exactly the `No_of_Lorries`.
         * Example: If `No_of_Lorries` is 10, then `IJM - 5, SKT - 2, HJM - 3` is valid because 5+2+3 = 10.
 
@@ -4089,9 +3988,9 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Broker": "Rakesh Ghoshal",
       "Area": "SOUTH BENGAL",
       "Mukkam": "KRISHNANAGAR",
-      "Bales_Mark": "loose",
+      "Bales_Mark": "Loose",
       "No_of_Lorries": 3,
-      "No_of_Bales": "80 Bls",
+      "No_of_Bales": "80 Qtls",
       "Grades": ["TD5", "TD6", "TD5D"],
       "Rates": [9800, 9600, 9750],
       "Unit": "SHM - 1, IJM - 2"
@@ -4101,7 +4000,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
       "Broker": "Rakesh Ghoshal",
       "Area": "BIHAR",
       "Mukkam": "PURNEA",
-      "Bales_Mark": "",
+      "Bales_Mark": "Loose",
       "No_of_Lorries": 2,
       "No_of_Bales": "105 Qtls",
       "Grades": ["TD6", "TD7"],
@@ -4123,7 +4022,6 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
   ]
 }
 """
-        # --- [END NEW SAUDA PROMPT - V11] ---
         response = model.generate_content([prompt_text, img])
         ai_response_text = response.text
 
@@ -4152,7 +4050,7 @@ def reset_process():
     keys_to_clear = [
         "extraction_done", "result_list", "current_edit_index",
         "active_input", "camera_open", "captured_image_data",
-        "show_charts" # Include show_charts in reset
+        "show_charts"
     ]
     for key in keys_to_clear:
         if key in st.session_state:
@@ -4162,7 +4060,7 @@ def reset_process():
     st.session_state.reset_counter += 1
     st.session_state.camera_open = False
     st.session_state.captured_image_data = None
-    st.session_state.show_charts = False # Default chart state (no longer used on-screen)
+    st.session_state.show_charts = False 
     st.rerun()
 
 def set_active_input_upload():
@@ -4188,12 +4086,9 @@ def handle_camera_snap():
 def start_manual_entry():
     """
     Initializes the result list with a single empty document
-    and sets extraction_done to True to reveal the editor.
     """
-    # --- UPDATED: Use IST Time helper ---
     today_str = get_ist_time().strftime("%d-%m-%Y")
 
-    # Create an empty template document
     empty_doc = {
         "PAGE_DATE": today_str,
         "OPENING_PRICE": "",
@@ -4220,7 +4115,7 @@ def save_and_go_prev():
     if st.session_state.current_edit_index > 0:
         st.session_state.current_edit_index -= 1
 
-# --- [NEW] Add/Delete Row Callbacks ---
+# --- Add/Delete Row Callbacks ---
 def add_sauda_row():
     """Appends a new, empty sauda dictionary to the current document's list."""
     if st.session_state.result_list:
@@ -4245,8 +4140,8 @@ def delete_sauda_row():
             else:
                 st.toast("Invalid Row Number", icon="⚠️")
 
-# --- Main App UI (Only shown if logged in) ---
-if True:  # Replaced with if True to enable main app directly
+# --- Main App UI ---
+if True:  
     st.set_page_config(
         page_title="🤖 Intelligent Jute Sauda OCR",
         page_icon="📜",
@@ -4260,7 +4155,6 @@ if True:  # Replaced with if True to enable main app directly
         st.markdown("### Hello Sir")
         st.divider()
 
-        # [UNCHANGED] Row Management stays here
         if st.session_state.extraction_done and st.session_state.result_list:
             st.write("### Row Management")
             col_del_input, col_del_btn = st.columns([1, 2])
@@ -4309,7 +4203,6 @@ if True:  # Replaced with if True to enable main app directly
     if not MY_API_KEY:
         st.error("🚨 CRITICAL ERROR: API Key not set! 🚨")
         st.markdown("This application requires a Google AI API Key to function.")
-        st.markdown("Please add your API Key to your `.streamlit/secrets.toml` file.")
         st.stop()
     else:
         # --- 3. Step 1: Provide an Image (with Tabs) ---
@@ -4341,7 +4234,6 @@ if True:  # Replaced with if True to enable main app directly
                         st.session_state.camera_open = True
                         st.rerun()
                 else:
-                    # --- MODIFICATION 2: Added help text ---
                     captured_image = st.camera_input(
                         "Take a Picture of a Document",
                         key=camera_key,
@@ -4353,13 +4245,13 @@ if True:  # Replaced with if True to enable main app directly
                         st.rerun()
                 if st.session_state.active_input == "camera" and st.session_state.captured_image_data is not None:
                     image_data_list = [st.session_state.captured_image_data]
-                
+            
             with manual_tab:
                 st.info("Manually enter sauda details without uploading an image.")
                 st.write("Click the button below to activate the editor in Step 2 with a blank form.")
                 if st.button("Start Manual Entry Mode", type="primary", use_container_width=True):
                     start_manual_entry()
-                    st.rerun() # Rerun to show the editor immediately
+                    st.rerun() 
 
             if len(image_data_list) > 20:
                 st.error(f"Batch Limit Exceeded: You uploaded {len(image_data_list)} files. Please select a maximum of 20 files at a time.")
@@ -4455,218 +4347,187 @@ if True:  # Replaced with if True to enable main app directly
                                 else:
                                     st.error("Extraction failed. No files could be processed.")
 
-    # --- 4. Step 2 & 3: Review, Edit, & Download ---
-    if st.session_state.extraction_done and st.session_state.result_list:
-        
-        with st.container(border=True):
-            st.header("Step 2: Review & Edit Data")
-
-            # Pagination info
-            total_items = len(st.session_state.result_list)
-            current_index = st.session_state.current_edit_index
-            st.info(f"You are editing **Page {current_index + 1} of {total_items}**.")
-            current_document = st.session_state.result_list[current_index]
-
-            # Page-level fields
-            st.subheader("Page-Level Details")
-            header_cols = st.columns(2)
-            with header_cols[0]:
-                current_document['PAGE_DATE'] = st.text_input(
-                    "Page Date",
-                    value=current_document.get('PAGE_DATE', ''),
-                    key=f"PAGE_DATE_{current_index}"
-                )
-            with header_cols[1]:
-                current_document['OPENING_PRICE'] = st.text_input(
-                    "TD5 Base: ",
-                    value=current_document.get('OPENING_PRICE', ''),
-                    key=f"OPENING_PRICE_{current_index}"
-                )
-
-            if 'saudas' not in current_document or not isinstance(current_document.get('saudas'), list):
-                current_document['saudas'] = []
-
-            # Pre-process lists to strings for editor
-            for s in current_document['saudas']:
-                if isinstance(s.get('Grades'), list):
-                    s['Grades'] = ", ".join(map(str, s['Grades']))
-                if isinstance(s.get('Rates'), list):
-                    s['Rates'] = ", ".join(map(str, s['Rates']))
-
-            st.write("---")
-            st.subheader("Sauda Entries")
-
-            is_mobile_mode = st.toggle("📱 Mobile Edit Mode", value=False, help="Switch to this mode to edit easily on phones without horizontal scrolling.")
-
-            if is_mobile_mode:
-                st.info("📝 Mobile Mode Active: Entries are shown as cards below.")
-                for i, sauda in enumerate(current_document['saudas']):
-                    with st.expander(f"Entry #{i+1} - {sauda.get('Broker', 'Unknown')}", expanded=False):
-                        # --- NEW: Base_Price Field Added ---
-                        c0 = st.columns(1)[0]
-                        current_document['saudas'][i]['Base_Price'] = c0.text_input("Base Price", sauda.get('Base_Price', ''), key=f"m_base_price_{current_index}_{i}")
-                        
-                        c1, c2 = st.columns(2)
-                        current_document['saudas'][i]['Broker'] = c1.text_input("Broker", sauda.get('Broker', ''), key=f"m_brk_{current_index}_{i}")
-                        current_document['saudas'][i]['Area'] = c2.text_input("Area", sauda.get('Area', ''), key=f"m_area_{current_index}_{i}")
-                        
-                        c3, c4 = st.columns(2)
-                        current_document['saudas'][i]['Mukkam'] = c3.text_input("Mukkam", sauda.get('Mukkam', ''), key=f"m_muk_{current_index}_{i}")
-                        current_document['saudas'][i]['Bales_Mark'] = c4.text_input("Bales Mark", sauda.get('Bales_Mark', ''), key=f"m_bm_{current_index}_{i}")
-                        
-                        c5, c6 = st.columns(2)
-                        current_document['saudas'][i]['No_of_Lorries'] = c5.number_input("Lorries", value=int(sauda.get('No_of_Lorries', 0)), key=f"m_lor_{current_index}_{i}")
-                        current_document['saudas'][i]['No_of_Bales'] = c6.text_input("Bales", str(sauda.get('No_of_Bales', '')), key=f"m_bal_{current_index}_{i}")
-
-                        current_document['saudas'][i]['Grades'] = st.text_input("Grades (comma sep)", sauda.get('Grades', ''), key=f"m_grd_{current_index}_{i}")
-                        current_document['saudas'][i]['Rates'] = st.text_input("Rates (comma sep)", sauda.get('Rates', ''), key=f"m_rts_{current_index}_{i}")
-                        current_document['saudas'][i]['Unit'] = st.text_input("Unit", sauda.get('Unit', ''), key=f"m_unt_{current_index}_{i}")
-
-            else:
-                # --- NEW: Base_Price Column Added to Config ---
-                current_document['saudas'] = st.data_editor(
-                    current_document['saudas'],
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key=f"data_editor_{current_index}",
-                    column_config={
-                        "Base_Price": st.column_config.TextColumn("Base Price"),
-                        "Broker": st.column_config.TextColumn("Broker", required=True),
-                        "Area": st.column_config.TextColumn("Area"),
-                        "Mukkam": st.column_config.TextColumn("Mukkam"),
-                        "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
-                        "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
-                        "No_of_Bales": st.column_config.TextColumn("No. of Bales"), 
-                        "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
-                        "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
-                        "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
-                    },
-                    column_order=("Base_Price", "Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
-                )
-
-            st.write("---")
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col1:
-                st.button(
-                    "⬅️ Previous",
-                    on_click=save_and_go_prev,
-                    use_container_width=True,
-                    disabled=(current_index == 0),
-                    type="primary"
-                )
-            with col3:
-                st.button(
-                    "Next ➡️",
-                    on_click=save_and_go_next,
-                    use_container_width=True,
-                    disabled=(current_index >= total_items - 1),
-                    type="primary"
-                )
-
-            st.divider()
-
-            # --- Download & Email Section ---
-            st.subheader("Step 3: Export Options")
-
-            try:
-                full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
-            except Exception as e:
-                st.error(f"Could not prepare data for download. Error: {e}")
-                full_edited_json_text = "[]"
-
-            st.write("Select sections to include in your PDF report:")
-            dl_col1, dl_col2, dl_col3 = st.columns(3)
-            with dl_col1:
-                dl_area_summary = st.checkbox("Area-wise Lorry Summary", value=True)
-                dl_broker_summary = st.checkbox("Broker & Area-wise Lorry Summary", value=True)
-            with dl_col2:
-                dl_unit_summary = st.checkbox("Unit-Area wise Lorry Summary", value=True) 
-                dl_sauda_details = st.checkbox("Entire Sauda Details (One Table per Page)", value=True) # --- UPDATED CHECKBOX TEXT ---
-            with dl_col3:
-                include_charts = st.checkbox("Include Visual Charts", value=False)
-
-            st.write("")
-
-            if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts and not dl_unit_summary:
-                st.warning("Please select at least one section to include in the PDF.")
-                pdf_data = None
-            else:
-                pdf_data = create_pdf(
-                    full_edited_json_text,
-                    dl_area_summary,
-                    dl_broker_summary,
-                    dl_sauda_details,
-                    dl_unit_summary=dl_unit_summary, 
-                    include_charts=include_charts
-                )
-
-            # --- MODIFICATION 3: Changed to 2 columns, commented out col_whatsapp ---
-            col_download, col_email = st.columns([1, 1])
-
-            # 1. Download Button
-            with col_download:
-                if pdf_data:
-                    st.download_button(
-                        label="⬇️ Download as PDF",
-                        data=pdf_data,
-                        file_name=f"sauda_export_batch_{datetime.date.today().strftime('%Y-%m-%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        on_click=save_and_log_download
-                    )
-                else:
-                    st.button("⬇️ Download as PDF", disabled=True, use_container_width=True)
-
-            # 2. Email Feature
-            with col_email:
-                with st.popover("📧 Email Report", use_container_width=True):
-                    st.write("Send this report via email.")
-                    email_recipient = st.text_input("Recipient Email", placeholder="manager@example.com")
-                    if st.button("Send Email Now", type="primary"):
-                        if not pdf_data:
-                            st.error("PDF generation failed. Cannot send.")
-                        elif not email_recipient:
-                            st.warning("Please enter an email address.")
-                        else:
-                            with st.spinner("Sending email..."):
-                                success = send_email_with_pdf(
-                                    email_recipient, 
-                                    pdf_data, 
-                                    filename=f"Sauda_Report_{datetime.date.today()}.pdf"
-                                )
-                                if success:
-                                    st.success(f"✅ Report sent to {email_recipient}!")
+        # --- 4. Step 2 & 3: Review, Edit, & Download ---
+        if st.session_state.extraction_done and st.session_state.result_list:
             
-            # 3. [NEW] WhatsApp "Share" Feature (COMMENTED OUT)
-            # with col_whatsapp:
-            #     with st.popover("💬 Share on WhatsApp", use_container_width=True):
-            #         st.write("Share report via WhatsApp.")
-            #         st.info("⚠️ **Note:** This opens WhatsApp with a message. You must **manually attach the PDF** after downloading it.")
-            #         
-            #         whatsapp_number = st.text_input(
-            #             "Recipient Phone (with country code)", 
-            #             st.session_state.whatsapp_recipient
-            #         )
-            #         st.session_state.whatsapp_recipient = whatsapp_number # Save changes
+            with st.container(border=True):
+                st.header("Step 2: Review & Edit Data")
 
-            #         # --- UPDATED: Use IST Time helper ---
-            #         today_str = get_ist_time().strftime("%d %B, %Y at %I:%M %p IST")
-            #         
-            #         whatsapp_message = st.text_area(
-            #             "Message", 
-            #             f"Hello, here is the Jute Sauda Report for {today_str}. Please find the PDF (which I will attach manually)."
-            #         )
-            #         
-            #         if pdf_data: # Only enable if PDF is ready
-            #             cleaned_number = re.sub(r"[\s+]", "", whatsapp_number)
-            #             encoded_message = quote_plus(whatsapp_message)
-            #             whatsapp_url = f"[https://wa.me/](https://wa.me/){cleaned_number}?text={encoded_message}"
-            #             
-            #             st.link_button(
-            #                 "Open WhatsApp Chat", 
-            #                 whatsapp_url, 
-            #                 type="primary", 
-            #                 use_container_width=True
-            #             )
-            #         else:
-            #             st.button("Open WhatsApp Chat", disabled=True, use_container_width=True)
+                # Pagination info
+                total_items = len(st.session_state.result_list)
+                current_index = st.session_state.current_edit_index
+                st.info(f"You are editing **Page {current_index + 1} of {total_items}**.")
+                current_document = st.session_state.result_list[current_index]
+
+                # Page-level fields
+                st.subheader("Page-Level Details")
+                header_cols = st.columns(2)
+                with header_cols[0]:
+                    current_document['PAGE_DATE'] = st.text_input(
+                        "Page Date",
+                        value=current_document.get('PAGE_DATE', ''),
+                        key=f"PAGE_DATE_{current_index}"
+                    )
+                with header_cols[1]:
+                    current_document['OPENING_PRICE'] = st.text_input(
+                        "TD5 Base: ",
+                        value=current_document.get('OPENING_PRICE', ''),
+                        key=f"OPENING_PRICE_{current_index}"
+                    )
+
+                if 'saudas' not in current_document or not isinstance(current_document.get('saudas'), list):
+                    current_document['saudas'] = []
+
+                # Pre-process lists to strings for editor
+                for s in current_document['saudas']:
+                    if isinstance(s.get('Grades'), list):
+                        s['Grades'] = ", ".join(map(str, s['Grades']))
+                    if isinstance(s.get('Rates'), list):
+                        s['Rates'] = ", ".join(map(str, s['Rates']))
+
+                st.write("---")
+                st.subheader("Sauda Entries")
+
+                is_mobile_mode = st.toggle("📱 Mobile Edit Mode", value=False, help="Switch to this mode to edit easily on phones without horizontal scrolling.")
+
+                if is_mobile_mode:
+                    st.info("📝 Mobile Mode Active: Entries are shown as cards below.")
+                    for i, sauda in enumerate(current_document['saudas']):
+                        with st.expander(f"Entry #{i+1} - {sauda.get('Broker', 'Unknown')}", expanded=False):
+                            c0 = st.columns(1)[0]
+                            current_document['saudas'][i]['Base_Price'] = c0.text_input("Base Price", sauda.get('Base_Price', ''), key=f"m_base_price_{current_index}_{i}")
+                            
+                            c1, c2 = st.columns(2)
+                            current_document['saudas'][i]['Broker'] = c1.text_input("Broker", sauda.get('Broker', ''), key=f"m_brk_{current_index}_{i}")
+                            current_document['saudas'][i]['Area'] = c2.text_input("Area", sauda.get('Area', ''), key=f"m_area_{current_index}_{i}")
+                            
+                            c3, c4 = st.columns(2)
+                            current_document['saudas'][i]['Mukkam'] = c3.text_input("Mukkam", sauda.get('Mukkam', ''), key=f"m_muk_{current_index}_{i}")
+                            current_document['saudas'][i]['Bales_Mark'] = c4.text_input("Bales Mark", sauda.get('Bales_Mark', ''), key=f"m_bm_{current_index}_{i}")
+                            
+                            c5, c6 = st.columns(2)
+                            current_document['saudas'][i]['No_of_Lorries'] = c5.number_input("Lorries", value=int(sauda.get('No_of_Lorries', 0)), key=f"m_lor_{current_index}_{i}")
+                            current_document['saudas'][i]['No_of_Bales'] = c6.text_input("Bales", str(sauda.get('No_of_Bales', '')), key=f"m_bal_{current_index}_{i}")
+
+                            current_document['saudas'][i]['Grades'] = st.text_input("Grades (comma sep)", sauda.get('Grades', ''), key=f"m_grd_{current_index}_{i}")
+                            current_document['saudas'][i]['Rates'] = st.text_input("Rates (comma sep)", sauda.get('Rates', ''), key=f"m_rts_{current_index}_{i}")
+                            current_document['saudas'][i]['Unit'] = st.text_input("Unit", sauda.get('Unit', ''), key=f"m_unt_{current_index}_{i}")
+
+                else:
+                    current_document['saudas'] = st.data_editor(
+                        current_document['saudas'],
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        key=f"data_editor_{current_index}",
+                        column_config={
+                            "Base_Price": st.column_config.TextColumn("Base Price"),
+                            "Broker": st.column_config.TextColumn("Broker", required=True),
+                            "Area": st.column_config.TextColumn("Area"),
+                            "Mukkam": st.column_config.TextColumn("Mukkam"),
+                            "Bales_Mark": st.column_config.TextColumn("Bales Mark"),
+                            "No_of_Lorries": st.column_config.NumberColumn("No. of Lorry(s)"),
+                            "No_of_Bales": st.column_config.TextColumn("No. of Bales"), 
+                            "Grades": st.column_config.TextColumn("Grades (e.g. TD5, TD6)"),
+                            "Rates": st.column_config.TextColumn("Rates (e.g. 9800, 9700)"),
+                            "Unit": st.column_config.TextColumn("Unit (e.g., SHM - 1)"),
+                        },
+                        column_order=("Base_Price", "Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit")
+                    )
+
+                st.write("---")
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col1:
+                    st.button(
+                        "⬅️ Previous",
+                        on_click=save_and_go_prev,
+                        use_container_width=True,
+                        disabled=(current_index == 0),
+                        type="primary"
+                    )
+                with col3:
+                    st.button(
+                        "Next ➡️",
+                        on_click=save_and_go_next,
+                        use_container_width=True,
+                        disabled=(current_index >= total_items - 1),
+                        type="primary"
+                    )
+
+                st.divider()
+
+                # --- Download & Email Section ---
+                st.subheader("Step 3: Export Options")
+
+                try:
+                    full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
+                except Exception as e:
+                    st.error(f"Could not prepare data for download. Error: {e}")
+                    full_edited_json_text = "[]"
+
+                st.write("Select sections to include in your PDF report:")
+                dl_col1, dl_col2, dl_col3 = st.columns(3)
+                with dl_col1:
+                    dl_area_summary = st.checkbox("Area-wise Lorry Summary", value=True)
+                    dl_broker_summary = st.checkbox("Broker & Area-wise Lorry Summary", value=True)
+                with dl_col2:
+                    dl_unit_summary = st.checkbox("Unit-Area wise Lorry Summary", value=True) 
+                    dl_sauda_details = st.checkbox("Entire Sauda Details (One Table per Page)", value=True)
+                with dl_col3:
+                    include_charts = st.checkbox("Include Visual Charts", value=False)
+
+                st.write("")
+
+                if not dl_area_summary and not dl_broker_summary and not dl_sauda_details and not include_charts and not dl_unit_summary:
+                    st.warning("Please select at least one section to include in the PDF.")
+                    pdf_data = None
+                else:
+                    pdf_data = create_pdf(
+                        full_edited_json_text,
+                        dl_area_summary,
+                        dl_broker_summary,
+                        dl_sauda_details,
+                        dl_unit_summary=dl_unit_summary, 
+                        include_charts=include_charts
+                    )
+
+                col_download, col_email = st.columns([1, 1])
+
+                # 1. Download Button (UPDATED WITH MERGED LOGIC)
+                with col_download:
+                    if pdf_data:
+                        st.download_button(
+                            label="⬇️ Download as PDF",
+                            data=pdf_data,
+                            file_name=f"Sauda_Report_{datetime.date.today()}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            on_click=save_and_log_download,
+                            kwargs={
+                                "event_name": "PDF Download",
+                                "details": "User downloaded the Sauda Report PDF",
+                                "pdf_data": pdf_data,
+                                "file_name_for_db": f"Sauda_Report_{datetime.date.today()}.pdf"
+                            }
+                        )
+                    else:
+                        st.button("⬇️ Download as PDF", disabled=True, use_container_width=True)
+
+                # 2. Email Feature
+                with col_email:
+                    with st.popover("📧 Email Report", use_container_width=True):
+                        st.write("Send this report via email.")
+                        email_recipient = st.text_input("Recipient Email", placeholder="manager@example.com")
+                        if st.button("Send Email Now", type="primary"):
+                            if not pdf_data:
+                                st.error("PDF generation failed. Cannot send.")
+                            elif not email_recipient:
+                                st.warning("Please enter an email address.")
+                            else:
+                                with st.spinner("Sending email..."):
+                                    success = send_email_with_pdf(
+                                        email_recipient, 
+                                        pdf_data, 
+                                        filename=f"Sauda_Report_{datetime.date.today()}.pdf"
+                                    )
+                                    if success:
+                                        st.success(f"✅ Report sent to {email_recipient}!")
