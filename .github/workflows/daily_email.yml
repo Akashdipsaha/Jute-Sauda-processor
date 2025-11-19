@@ -2,8 +2,9 @@ name: Daily Report Emailer
 
 on:
   schedule:
-    - cron: '20 6 * * *'
-  workflow_dispatch: # Allows you to click a button to test it manually
+
+    - cron: '30 6 * * *'
+  workflow_dispatch:
 
 jobs:
   run-mailer:
