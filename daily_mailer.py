@@ -58,7 +58,7 @@ def send_daily_email():
     msg['To'] = ", ".join(RECIPIENT_LIST)
     msg['Subject'] = f"Daily Jute Sauda Report - {display_date}"
 
-        body = f"""
+    body = f"""
     <html>
     <body style="margin:0; padding:0; background:#f5f7fa; font-family:Arial, sans-serif;">
 
@@ -150,4 +150,5 @@ def send_daily_email():
 
 if __name__ == "__main__":
     send_daily_email()
+
 
