@@ -15,7 +15,13 @@ MONGO_PASS = os.environ.get("MONGO_PASS")
 MONGO_URL = os.environ.get("MONGO_URL")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 SENDER_PASS = os.environ.get("SENDER_PASS")
-RECIPIENT_LIST = ["akashdip.saha@jute-india.com"] 
+
+# --- UPDATE RECIPIENTS HERE ---
+# Add as many emails as you want, separated by commas
+RECIPIENT_LIST = [
+    "akashdip.saha@jute-india.com",
+    "officialakashdip.333@gmail.com",  
+] 
 
 def get_ist_time():
     ist_tz = pytz.timezone('Asia/Kolkata')
@@ -55,6 +61,7 @@ def send_daily_email():
     # --- EMAIL SETUP ---
     msg = MIMEMultipart()
     msg['From'] = f"Jute Reporting System <{SENDER_EMAIL}>"
+    # This joins all emails with a comma for the "To" header display
     msg['To'] = ", ".join(RECIPIENT_LIST)
     msg['Subject'] = f"Daily Jute Sauda Report - {display_date}"
 
@@ -68,7 +75,6 @@ def send_daily_email():
 
           <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:10px; box-shadow:0px 2px 10px rgba(0,0,0,0.05); overflow:hidden;">
 
-            <!-- Header -->
             <tr>
               <td style="background:linear-gradient(90deg, #0f8364, #1ba57c); padding:22px 28px; color:#ffffff;">
                 <h2 style="margin:0; font-size:22px; font-weight:600;">Daily Sauda Report</h2>
@@ -76,7 +82,6 @@ def send_daily_email():
               </td>
             </tr>
 
-            <!-- Body -->
             <tr>
               <td style="padding:28px; color:#333333; font-size:14px; line-height:1.6;">
 
@@ -85,7 +90,6 @@ def send_daily_email():
                 <p>Please find attached the latest processed <strong>Jute Sauda Report</strong> for today.  
                 The document includes the OCR-extracted details submitted through the reporting system.</p>
 
-                <!-- Light summary card -->
                 <div style="background:#f7faf9; border:1px solid #d9e7e2; padding:14px 16px; border-radius:8px; margin:20px 0;">
                   <p style="margin:0;"><strong>📄 Report:</strong> Latest file</p>
                   <p style="margin:4px 0 0;"><strong>📅 Date:</strong> {display_date}</p>
@@ -99,7 +103,6 @@ def send_daily_email():
               </td>
             </tr>
 
-            <!-- Footer -->
             <tr>
               <td style="background:#f1f3f5; text-align:center; padding:15px; font-size:12px; color:#8a8a8a;">
                 This is an automated message. Please do not reply.<br>
@@ -116,7 +119,6 @@ def send_daily_email():
     </body>
     </html>
     """
-
     
     msg.attach(MIMEText(body, 'html'))
 
@@ -140,6 +142,7 @@ def send_daily_email():
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(SENDER_EMAIL, SENDER_PASS)
+        # The server.sendmail function takes the LIST of recipients to send to all of them
         server.sendmail(SENDER_EMAIL, RECIPIENT_LIST, msg.as_string())
         server.quit()
         print("✅ Professional Email sent successfully!")
@@ -148,6 +151,3 @@ def send_daily_email():
 
 if __name__ == "__main__":
     send_daily_email()
-
-
-
