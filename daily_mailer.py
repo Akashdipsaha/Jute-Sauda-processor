@@ -20,7 +20,8 @@ SENDER_PASS = os.environ.get("SENDER_PASS")
 # Add as many emails as you want, separated by commas
 RECIPIENT_LIST = [
     "akashdip.saha@jute-india.com",
-    "officialakashdip.333@gmail.com",  
+    "officialakashdip.333@gmail.com", 
+    "payal.sinha@jute-india.com",
 ] 
 
 def get_ist_time():
@@ -151,3 +152,4 @@ def send_daily_email():
 
 if __name__ == "__main__":
     send_daily_email()
+
