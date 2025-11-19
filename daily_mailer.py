@@ -9,19 +9,15 @@ from pymongo import MongoClient
 from urllib.parse import quote_plus
 import pytz
 
-# --- CONFIGURATION (Loaded from GitHub Secrets) ---
-# We use os.environ so your passwords aren't exposed in the public code file
+# --- CONFIGURATION ---
 MONGO_USER = os.environ.get("MONGO_USER")
 MONGO_PASS = os.environ.get("MONGO_PASS")
 MONGO_URL = os.environ.get("MONGO_URL")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 SENDER_PASS = os.environ.get("SENDER_PASS")
-
-# Recipient list - You can edit this list directly here
 RECIPIENT_LIST = ["akashdip.saha@jute-india.com"] 
 
 def get_ist_time():
-    # IST is UTC + 5:30
     ist_tz = pytz.timezone('Asia/Kolkata')
     return datetime.datetime.now(ist_tz)
 
@@ -39,65 +35,87 @@ def connect_mongo():
 def send_daily_email():
     print("Starting Daily Emailer...")
     db = connect_mongo()
-    if db is None:
-        return
+    if db is None: return
 
     col = db["daily_pdf_storage"]
-    
-    # Get today's date in IST to match the file upload date
     today_str = get_ist_time().strftime("%Y-%m-%d")
-    print(f"Looking for reports uploaded on: {today_str}")
+    display_date = get_ist_time().strftime("%d %B, %Y") # e.g., 19 November, 2025
     
-    # Find all reports uploaded "Today"
+    # Find reports
     cursor = col.find({"upload_date": today_str})
     reports = list(cursor)
     
     if not reports:
-        print("No reports found for today. Skipping email.")
+        print("No reports found for today. Skipping.")
         return
 
-    print(f"Found {len(reports)} report(s). Preparing email...")
-
-    # Setup Email
+    # --- EMAIL SETUP ---
     msg = MIMEMultipart()
-    msg['From'] = f"Jute Automation <{SENDER_EMAIL}>"
+    msg['From'] = f"Jute Reporting System <{SENDER_EMAIL}>"
     msg['To'] = ", ".join(RECIPIENT_LIST)
-    msg['Subject'] = f"Daily Jute Sauda Reports - {today_str}"
+    msg['Subject'] = f"Daily Jute Sauda Report - {display_date}"
     
+    # --- PROFESSIONAL HTML BODY ---
     body = f"""
     <html>
-      <body>
-        <p><strong>Dear Sir/Madam,</strong></p>
-        <p>Please find attached the <strong>{len(reports)}</strong> Sauda Report(s) generated today ({today_str}).</p>
-        <hr>
-        <p style="font-size: 12px; color: #666;">Automated System</p>
-      </body>
+    <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+        <div style="max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+            
+            <div style="background-color: #016B61; color: #ffffff; padding: 20px; text-align: center;">
+                <h2 style="margin: 0;">Daily Sauda Report</h2>
+                <p style="margin: 5px 0 0; font-size: 14px;">{display_date}</p>
+            </div>
+
+            <div style="padding: 25px;">
+                <p><strong>Dear Sir/Madam,</strong></p>
+                
+                <p>Please find attached the consolidated Jute Sauda OCR reports generated today.</p>
+                
+                <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <p style="margin: 0;"><strong>📄 Reports Generated:</strong> {len(reports)}</p>
+                    <p style="margin: 0;"><strong>📅 Date:</strong> {display_date}</p>
+                    <p style="margin: 0;"><strong>✅ Status:</strong> Successfully Processed</p>
+                </div>
+
+                <p>These documents contain the digitized data extracted from the handwritten ledgers submitted via the OCR portal.</p>
+                
+                <br>
+                <p>Best Regards,</p>
+                <p><strong>Intelligent Jute OCR Automation</strong><br>
+                <span style="color: #888; font-size: 12px;">Internal Digital Processing Unit</span></p>
+            </div>
+
+            <div style="background-color: #f4f4f4; padding: 15px; text-align: center; font-size: 11px; color: #888;">
+                <p style="margin: 0;">This is an automated email. Please do not reply directly to this message.</p>
+                <p style="margin: 5px 0 0;">&copy; 2025 Jute India. All rights reserved.</p>
+            </div>
+        </div>
+    </body>
     </html>
     """
     msg.attach(MIMEText(body, 'html'))
 
-    # Attach every PDF found in DB for today
+    # Attach files
     for i, doc in enumerate(reports):
         try:
             pdf_bytes = doc["pdf_data"]
-            filename = doc.get("filename", f"report_{i}.pdf")
-            
+            filename = doc.get("filename", f"Sauda_Report_{today_str}_{i+1}.pdf")
             part = MIMEBase('application', 'octet-stream')
             part.set_payload(pdf_bytes)
             encoders.encode_base64(part)
             part.add_header('Content-Disposition', f"attachment; filename= {filename}")
             msg.attach(part)
         except Exception as e:
-            print(f"Error attaching file {i}: {e}")
+            print(f"Error attaching file: {e}")
 
-    # Send Email
+    # Send
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(SENDER_EMAIL, SENDER_PASS)
         server.sendmail(SENDER_EMAIL, RECIPIENT_LIST, msg.as_string())
         server.quit()
-        print("✅ Email sent successfully!")
+        print("✅ Professional Email sent successfully!")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
