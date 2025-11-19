@@ -2,7 +2,8 @@ name: Daily Report Emailer
 
 on:
   schedule:
-    - cron: '55 6 * * *'
+    # 07:15 UTC is exactly 12:45 PM IST
+    - cron: '15 7 * * *'
   workflow_dispatch:
 
 jobs:
