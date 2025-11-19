@@ -3,7 +3,7 @@ name: Daily Report Emailer
 on:
   schedule:
     # Runs at 14:30 UTC, which is 20:00 (8 PM) IST
-    - cron: '45 5 * * *'
+    - cron: '55 5 * * *'
   workflow_dispatch: # Allows you to click a button to test it manually
 
 jobs:
