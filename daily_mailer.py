@@ -87,12 +87,10 @@ def send_daily_email():
 
                 <!-- Light summary card -->
                 <div style="background:#f7faf9; border:1px solid #d9e7e2; padding:14px 16px; border-radius:8px; margin:20px 0;">
-                  <p style="margin:0;"><strong>📄 Report:</strong> Latest uploaded file</p>
+                  <p style="margin:0;"><strong>📄 Report:</strong> Latest file</p>
                   <p style="margin:4px 0 0;"><strong>📅 Date:</strong> {display_date}</p>
                   <p style="margin:4px 0 0;"><strong>✔ Status:</strong> Successfully processed</p>
                 </div>
-
-                <p>If you need historical reports or additional formats, feel free to contact the automation team.</p>
 
                 <br>
                 <p style="margin:0; font-weight:600; color:#0f5c47;">Intelligent Jute OCR Automation</p>
@@ -105,7 +103,7 @@ def send_daily_email():
             <tr>
               <td style="background:#f1f3f5; text-align:center; padding:15px; font-size:12px; color:#8a8a8a;">
                 This is an automated message. Please do not reply.<br>
-                © 2025 – AKS Automation.
+                © 2025 - AKS. All rights reserved.
               </td>
             </tr>
 
@@ -150,5 +148,6 @@ def send_daily_email():
 
 if __name__ == "__main__":
     send_daily_email()
+
 
 
