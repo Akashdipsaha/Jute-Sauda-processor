@@ -58,41 +58,131 @@ def send_daily_email():
     msg['To'] = ", ".join(RECIPIENT_LIST)
     msg['Subject'] = f"Daily Jute Sauda Report - {display_date}"
     
-    # --- PROFESSIONAL HTML BODY ---
+    # --- MODERN + GREEN SHIMMER HTML BODY ---
+    # Note: CSS animations are not supported in all email clients; a static green gradient
+    # fallback is provided for maximum compatibility.
     body = f"""
     <html>
-    <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-        <div style="max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-            
-            <div style="background-color: #016B61; color: #ffffff; padding: 20px; text-align: center;">
-                <h2 style="margin: 0;">Daily Sauda Report</h2>
-                <p style="margin: 5px 0 0; font-size: 14px;">{display_date}</p>
+    <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+      <style>
+        /* Generic resets */
+        body {{ margin:0; padding:0; background:#f6f7fb; -webkit-font-smoothing:antialiased; }}
+        .wrapper {{ width:100%; padding:30px 0; }}
+        .container {{
+          width: 100%;
+          max-width: 680px;
+          margin: 0 auto;
+          background: #ffffff;
+          border-radius: 12px;
+          box-shadow: 0 6px 24px rgba(10,20,30,0.08);
+          overflow: hidden;
+          font-family: "Helvetica Neue", Arial, sans-serif;
+          color: #222;
+        }}
+
+        /* Header with green shimmer */
+        .header {{
+          position: relative;
+          padding: 28px 22px;
+          text-align: left;
+          color: #ffffff;
+          background: linear-gradient(90deg, #0f7a63 0%, #0f7a63 100%);
+        }}
+        /* shimmer overlay - animated */
+        .shimmer {{
+          position: absolute;
+          top: 0;
+          left: -50%;
+          width: 200%;
+          height: 100%;
+          background: linear-gradient(120deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.28) 50%, rgba(255,255,255,0.06) 100%);
+          transform: skewX(-20deg);
+          animation: shimmer 6s linear infinite;
+          pointer-events: none;
+          opacity: 0.9;
+        }}
+        @keyframes shimmer {{
+          0% {{ transform: translateX(-100%) skewX(-20deg); }}
+          50% {{ transform: translateX(0%) skewX(-20deg); }}
+          100% {{ transform: translateX(100%) skewX(-20deg); }}
+        }}
+
+        /* header text */
+        .title {{ font-size: 22px; margin:0 0 6px; letter-spacing:0.2px; }}
+        .sub {{ margin:0; font-size:13px; opacity:0.95; }}
+
+        /* content */
+        .content {{ padding: 24px; line-height:1.5; color:#333; }}
+        .gcard {{
+          background: linear-gradient(180deg, #fbfffd 0%, #f4f9f7 100%);
+          border-radius: 10px;
+          padding: 14px;
+          border: 1px solid rgba(7, 96, 77, 0.06);
+          box-shadow: 0 2px 8px rgba(6, 45, 36, 0.03);
+          margin: 14px 0;
+        }}
+        .meta-row {{ display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:#2b4d44; }}
+        .meta-item {{ background: rgba(7,96,77,0.06); padding:8px 10px; border-radius:8px; }}
+
+        /* CTA / name */
+        .signature {{ margin-top:18px; color:#0b3f35; font-weight:600; }}
+        .org {{ font-size:12px; color:#777; margin-top:4px; }}
+
+        /* footer */
+        .footer {{ padding:14px; background:#fbfbfb; text-align:center; color:#9aa0a6; font-size:12px; }}
+
+        /* Responsive */
+        @media only screen and (max-width:480px) {{
+          .container {{ border-radius:8px; }}
+          .title {{ font-size:18px; }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="wrapper">
+        <div class="container" role="article" aria-label="Daily Sauda Report">
+          
+          <div class="header" style="background: linear-gradient(90deg, #0f7a63 0%, #2bb58a 100%);">
+            <div class="shimmer" aria-hidden="true"></div>
+            <div style="position:relative; z-index:2;">
+              <h1 class="title">Daily Sauda Report</h1>
+              <p class="sub">{display_date}</p>
+            </div>
+          </div>
+
+          <div class="content">
+            <p><strong>Dear Sir / Madam,</strong></p>
+
+            <p>Please find attached the consolidated Jute Sauda Report generated today. We have attached the <strong>latest</strong> processed PDF for your review.</p>
+
+            <div class="gcard" role="group" aria-label="Report summary">
+              <div class="meta-row">
+                <div class="meta-item">📄 <strong>Report</strong>: Latest</div>
+                <div class="meta-item">📅 <strong>Date</strong>: {display_date}</div>
+                <div class="meta-item">✅ <strong>Status</strong>: Processed</div>
+              </div>
+
+              <p style="margin-top:12px; color:#395349; font-size:14px;">
+                This document contains OCR-extracted data from the handwritten ledgers submitted via the OCR app. Please review and let us know if any corrections are required.
+              </p>
             </div>
 
-            <div style="padding: 25px;">
-                <p><strong>Dear Sir/Madam,</strong></p>
-                
-                <p>Please find attached the consolidated Jute Sauda OCR report generated today.</p>
-                
-                <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <p style="margin: 0;"><strong>📄 Reports Sent:</strong> 1 (Latest)</p>
-                    <p style="margin: 0;"><strong>📅 Date:</strong> {display_date}</p>
-                    <p style="margin: 0;"><strong>✅ Status:</strong> Successfully Processed</p>
-                </div>
+            <p class="signature">Intelligent Jute OCR Automation</p>
+            <p class="org">Shaktigarh Textile &amp; Industries LTD.</p>
 
-                <p>This document contains the digitized data extracted from the handwritten ledgers submitted via the OCR portal.</p>
-                
-                <br>
-                <p>Best Regards,</p>
-                <p><strong>Intelligent Jute OCR Automation</strong><br>
-                <span style="color: #888; font-size: 12px;">Shaktigarh Textile & Industries LTD.</span></p>
-            </div>
+            <hr style="border:none; height:1px; background: linear-gradient(90deg, rgba(7,96,77,0.06), rgba(0,0,0,0)); margin:18px 0;" />
 
-            <div style="background-color: #f4f4f4; padding: 15px; text-align: center; font-size: 11px; color: #888;">
-                <p style="margin: 0;">This is an automated email. Please do not reply directly to this message.</p>
-                <p style="margin: 5px 0 0;">~AKS</p>
-            </div>
+            <p style="font-size:13px; color:#4a4a4a; margin-bottom:0;">
+              If you need a different format or additional reports, reply to this email or contact the automation team.
+            </p>
+          </div>
+
+          <div class="footer">
+            This is an automated email. Please do not reply directly to this message. &nbsp;|&nbsp; © 2025 - AKS. All rights reserved.
+          </div>
         </div>
+      </div>
     </body>
     </html>
     """
