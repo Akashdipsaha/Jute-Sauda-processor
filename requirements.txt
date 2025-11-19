@@ -4,5 +4,7 @@ pandas
 Pillow
 fpdf
 pymongo
-pymupdf
+fitz
+PyMuPDF
 matplotlib
+pytz
