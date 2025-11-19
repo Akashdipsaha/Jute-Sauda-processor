@@ -41,13 +41,16 @@ def send_daily_email():
     today_str = get_ist_time().strftime("%Y-%m-%d")
     display_date = get_ist_time().strftime("%d %B, %Y") # e.g., 19 November, 2025
     
-    # Find reports
+    # Find reports for today
     cursor = col.find({"upload_date": today_str})
     reports = list(cursor)
     
     if not reports:
         print("No reports found for today. Skipping.")
         return
+
+    # --- LOGIC CHANGE: Get only the LAST (most recent) report ---
+    latest_report = reports[-1]
 
     # --- EMAIL SETUP ---
     msg = MIMEMultipart()
@@ -69,25 +72,25 @@ def send_daily_email():
             <div style="padding: 25px;">
                 <p><strong>Dear Sir/Madam,</strong></p>
                 
-                <p>Please find attached the consolidated Jute Sauda OCR reports generated today.</p>
+                <p>Please find attached the consolidated Jute Sauda OCR report generated today.</p>
                 
                 <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                    <p style="margin: 0;"><strong>📄 Reports Generated:</strong> {len(reports)}</p>
+                    <p style="margin: 0;"><strong>📄 Reports Sent:</strong> 1 (Latest)</p>
                     <p style="margin: 0;"><strong>📅 Date:</strong> {display_date}</p>
                     <p style="margin: 0;"><strong>✅ Status:</strong> Successfully Processed</p>
                 </div>
 
-                <p>These documents contain the digitized data extracted from the handwritten ledgers submitted via the OCR portal.</p>
+                <p>This document contains the digitized data extracted from the handwritten ledgers submitted via the OCR portal.</p>
                 
                 <br>
                 <p>Best Regards,</p>
                 <p><strong>Intelligent Jute OCR Automation</strong><br>
-                <span style="color: #888; font-size: 12px;">Internal Digital Processing Unit</span></p>
+                <span style="color: #888; font-size: 12px;">Shaktigarh Textile & Industries LTD.</span></p>
             </div>
 
             <div style="background-color: #f4f4f4; padding: 15px; text-align: center; font-size: 11px; color: #888;">
                 <p style="margin: 0;">This is an automated email. Please do not reply directly to this message.</p>
-                <p style="margin: 5px 0 0;">&copy; 2025 Jute India. All rights reserved.</p>
+                <p style="margin: 5px 0 0;">~AKS</p>
             </div>
         </div>
     </body>
@@ -95,18 +98,20 @@ def send_daily_email():
     """
     msg.attach(MIMEText(body, 'html'))
 
-    # Attach files
-    for i, doc in enumerate(reports):
-        try:
-            pdf_bytes = doc["pdf_data"]
-            filename = doc.get("filename", f"Sauda_Report_{today_str}_{i+1}.pdf")
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(pdf_bytes)
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f"attachment; filename= {filename}")
-            msg.attach(part)
-        except Exception as e:
-            print(f"Error attaching file: {e}")
+    # Attach ONLY the latest file
+    try:
+        pdf_bytes = latest_report["pdf_data"]
+        # Use filename from DB or fallback
+        filename = latest_report.get("filename", f"Sauda_Report_{today_str}.pdf")
+        
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(pdf_bytes)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f"attachment; filename= {filename}")
+        msg.attach(part)
+        print(f"Attached latest report: {filename}")
+    except Exception as e:
+        print(f"Error attaching file: {e}")
 
     # Send
     try:
