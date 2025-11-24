@@ -10,7 +10,6 @@ import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from urllib.parse import quote_plus
-import fitz
 import datetime
 import matplotlib.pyplot as plt
 import tempfile
@@ -4531,3 +4530,4 @@ if True:
                                     )
                                     if success:
                                         st.success(f"✅ Report sent to {email_recipient}!")
+
