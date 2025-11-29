@@ -27,7 +27,7 @@ from bson.binary import Binary
 MY_API_KEY = "AIzaSyCBoHaw6LdDcXF1tg3oloV7_e0tTrJyj84" 
 MONGO_USER = "Akashdip_Saha"
 MONGO_PASSWORD = "STIL@12345"
-MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"q
+MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
 # --- 1. LOAD SECRETS SAFELY ---
 try:
     # Try loading from secrets.toml first
@@ -4534,5 +4534,6 @@ if True:
                                     )
                                     if success:
                                         st.success(f"✅ Report sent to {email_recipient}!")
+
 
 
