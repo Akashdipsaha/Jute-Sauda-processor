@@ -37,7 +37,7 @@ try:
     MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
 except Exception:
     # Fallback to your hardcoded values if secrets file is missing (for safety)
-    MY_API_KEY = "AIzaSyAdcy7FttGKaaHjdkqrPXxTnH5Q6eDSG9w"
+    MY_API_KEY = "AIzaSyCBoHaw6LdDcXF1tg3oloV7_e0tTrJyj84"
     MONGO_USER = "Akashdip_Saha"
     MONGO_PASSWORD = "STIL@12345"
     MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
@@ -4534,6 +4534,7 @@ if True:
                                     )
                                     if success:
                                         st.success(f"✅ Report sent to {email_recipient}!")
+
 
 
 
