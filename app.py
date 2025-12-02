@@ -15,32 +15,49 @@ import matplotlib.pyplot as plt
 import tempfile
 import os
 
-# --- NEW IMPORTS FOR EMAIL & DB STORAGE ---
+# --- NEW IMPORTS FOR EMAIL, DB & SAP ---
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
-# --- ADDED AS REQUESTED ---
 from bson.binary import Binary 
+import requests
+from requests.auth import HTTPBasicAuth
+import urllib3
+import fitz  
 
-MY_API_KEY = "AIzaSyCBoHaw6LdDcXF1tg3oloV7_e0tTrJyj84" 
+# Suppress insecure request warnings for SAP self-signed certs
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- CONFIGURATION ---
+MY_API_KEY = "AIzaSyBi26lZySMpOgwO4-9RuQ5GdkZFCy9vGRo" 
 MONGO_USER = "Akashdip_Saha"
 MONGO_PASSWORD = "STIL@12345"
 MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
-# --- 1. LOAD SECRETS SAFELY ---
+
+# --- SAP CONFIGURATION (VERIFIED) ---
+SAP_HOST = "https://192.168.102.18:44300"
+# This combines Host + Service Path + EntitySet
+SAP_SERVICE_URL = f"{SAP_HOST}/sap/opu/odata/sap/ZSAUDA_OCR_PR_SRV/SaudaHeaderSet"
+# Details from your screenshot (Bottom Right Corner: DS4 (1) 100)
+SAP_CLIENT = "100" 
+SAP_USERNAME = "SGET09"      # User provided
+SAP_PASSWORD = "ElBicho@12"  # <--- ⚠️ UPDATE THIS WITH YOUR PASSWORD
+
+# --- 1. LOAD SECRETS SAFELY (Optional override from secrets.toml) ---
 try:
-    # Try loading from secrets.toml first
-    MY_API_KEY = st.secrets["general"]["api_key"]
-    MONGO_USER = st.secrets["mongo"]["username"]
-    MONGO_PASSWORD = st.secrets["mongo"]["password"]
-    MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
+    if "general" in st.secrets:
+        MY_API_KEY = st.secrets["general"]["api_key"]
+    if "mongo" in st.secrets:
+        MONGO_USER = st.secrets["mongo"]["username"]
+        MONGO_PASSWORD = st.secrets["mongo"]["password"]
+        MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
+    if "sap" in st.secrets:
+        SAP_USERNAME = st.secrets["sap"]["username"]
+        SAP_PASSWORD = st.secrets["sap"]["password"]
 except Exception:
-    # Fallback to your hardcoded values if secrets file is missing (for safety)
-    MY_API_KEY = "AIzaSyCBoHaw6LdDcXF1tg3oloV7_e0tTrJyj84"
-    MONGO_USER = "Akashdip_Saha"
-    MONGO_PASSWORD = "STIL@12345"
-    MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
+    pass 
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
@@ -50,7 +67,7 @@ def get_mongo_connection():
         if not MONGO_USER or not MONGO_PASSWORD or not MONGO_CLUSTER_URL:
             st.error("MongoDB secrets are not loaded. Cannot connect.")
             return None
-            
+             
         escaped_user = quote_plus(MONGO_USER)
         escaped_pass = quote_plus(MONGO_PASSWORD)
         connection_string = f"mongodb+srv://{escaped_user}:{escaped_pass}@{MONGO_CLUSTER_URL}"
@@ -76,7 +93,6 @@ def get_ist_time():
 def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf"):
     """
     Sends the generated PDF via email using credentials from st.secrets.
-    Uses HTML formatting for a professional look.
     """
     try:
         sender_email = st.secrets["email"]["sender_email"]
@@ -96,15 +112,15 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
     msg['From'] = f"Jute OCR System <{sender_email}>"
     msg['To'] = recipient_email
     msg['Subject'] = f"📄 Daily Jute Sauda Report - {subject_str}"
-    
+     
     # PROFESSIONAL HTML BODY
     html_body = f"""
     <html>
       <body>
         <p><strong>Dear Sir/Madam,</strong></p>
-        
+         
         <p>Please find attached the generated <strong>Jute Sauda OCR Report</strong> for today, {today_str}.</p>
-        
+         
         <hr style="border: 0; border-top: 1px solid #eee;">
         <p style="font-size: 12px; color: #666;">
         <em>Best Regards,<br>
@@ -114,7 +130,7 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
       </body>
     </html>
     """
-    
+     
     msg.attach(MIMEText(html_body, 'html'))
 
     # Attach PDF
@@ -137,6 +153,129 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
         st.error(f"Failed to send email: {e}")
         return False
 
+# --- UPDATED SAP INTEGRATION FUNCTIONS ---
+def transform_to_sap_payload(doc):
+    """
+    Converts one Streamlit Document object into SAP OData Deep Insert format.
+    Includes DATE FORMATTING FIX.
+    """
+    # Create a unique ID
+    timestamp_suffix = datetime.datetime.now().strftime('%H%M%S%f')
+    unique_id = f"{doc.get('PAGE_DATE', 'UNKNOWN')}_{doc.get('OPENING_PRICE', '0')}_{timestamp_suffix}"[:50] 
+     
+    # --- DATE FIX: Convert DD-MM-YYYY to YYYY-MM-DDT00:00:00 ---
+    raw_date = doc.get("PAGE_DATE", "")
+    formatted_date = None
+    if raw_date:
+        try:
+            # Handle potential separators / or . or -
+            clean_date = str(raw_date).replace("/", "-").replace(".", "-")
+            date_obj = datetime.datetime.strptime(clean_date, "%d-%m-%Y")
+            # ISO Format for OData
+            formatted_date = date_obj.strftime("%Y-%m-%dT00:00:00")
+        except ValueError:
+            # If date parsing fails, keep None or handle error
+            formatted_date = None
+
+    # 1. Map Header Fields
+    sap_payload = {
+        "Zid":      str(unique_id).replace("/", "-").replace(" ", ""), 
+        "PageDate": formatted_date, # Use the formatted ISO date
+        "OpPrice":  str(doc.get("OPENING_PRICE", "")),
+        "UpBy":     st.session_state.username,
+        "UpAt":     datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), # ISO Format
+        "saudas":   [] # verified lowercase to match SEGW
+    }
+
+    # 2. Map Item Fields
+    for item in doc.get("saudas", []):
+         
+        # Helper to clean list/string formats
+        def clean_val(val):
+            if isinstance(val, list):
+                return ", ".join(map(str, val))
+            return str(val) if val else ""
+
+        sap_item = {
+            "Broker":   clean_val(item.get("Broker")),
+            "Area":     clean_val(item.get("Area")),
+            "Mukkam":   clean_val(item.get("Mukkam")),
+            "Bales":    clean_val(item.get("No_of_Bales")),
+            "Grades":   clean_val(item.get("Grades")),
+            "Rates":    clean_val(item.get("Rates")),
+            "Unit":     clean_val(item.get("Unit")),
+            "BasePr":   clean_val(item.get("Base_Price")),
+            "Lorries":  str(item.get("No_of_Lorries", "0")),
+            "BalMark":  clean_val(item.get("Bales_Mark"))
+        }
+        sap_payload["saudas"].append(sap_item)
+
+    return sap_payload
+
+def upload_to_sap(doc_list):
+    """
+    Loops through documents and sends them to SAP one by one.
+    """
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(SAP_USERNAME, SAP_PASSWORD)
+     
+    success_count = 0
+    errors = []
+
+    # 1. Fetch CSRF Token (Security Requirement)
+    try:
+        # Base service URL for Token Fetch (remove EntitySet)
+        service_root = SAP_SERVICE_URL.replace("/SaudaHeaderSet", "/")
+        params = {"sap-client": SAP_CLIENT}
+         
+        # Disable SSL verification for local testing (verify=False)
+        r_head = session.get(service_root, headers={"x-csrf-token": "fetch"}, params=params, verify=False)
+        csrf_token = r_head.headers.get("x-csrf-token")
+         
+        if not csrf_token:
+            return False, "Could not fetch SAP CSRF Token. Check VPN connection."
+            
+    except Exception as e:
+        return False, f"Connection Error: {str(e)}"
+
+    # 2. Post Data
+    headers = {
+        "x-csrf-token": csrf_token,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    for i, doc in enumerate(doc_list):
+        try:
+            payload = transform_to_sap_payload(doc)
+            # Debug: Print payload if needed
+            # print(json.dumps(payload, indent=2))
+             
+            r_post = session.post(SAP_SERVICE_URL, json=payload, headers=headers, params=params, verify=False)
+             
+            if r_post.status_code == 201: # 201 Created
+                success_count += 1
+            else:
+                # Try to get error message from SAP response
+                err_msg = f"Doc {i+1} Failed ({r_post.status_code})"
+                try:
+                    err_json = r_post.json()
+                    err_msg += f": {err_json['error']['message']['value']}"
+                except:
+                    err_msg += f": {r_post.text[:100]}"
+                errors.append(err_msg)
+                
+        except Exception as e:
+            errors.append(f"Doc {i+1} Exception: {str(e)}")
+
+    if success_count == len(doc_list):
+        return True, f"Successfully uploaded {success_count} documents to SAP!"
+    elif success_count > 0:
+        return True, f"Partial Success: {success_count} uploaded. Errors: {'; '.join(errors)}"
+    else:
+        return False, f"All SAP uploads failed. Errors: {'; '.join(errors)}"
+
+
 # --- UPDATED: DOWNLOAD HANDLER (Merged with your requested logic) ---
 def save_and_log_download(event_name="PDF Download", details="User downloaded the Sauda Report PDF", pdf_data=None, file_name_for_db=None):
     """
@@ -145,7 +284,7 @@ def save_and_log_download(event_name="PDF Download", details="User downloaded th
     3. [NEW] STORES the PDF Binary to 'daily_pdf_storage' for the daily emailer.
     """
     users_col = get_mongo_connection()
-    
+     
     if users_col is None:
         print("MongoDB connection failed, skipping save.")
         return
@@ -181,19 +320,19 @@ def save_and_log_download(event_name="PDF Download", details="User downloaded th
                 doc_copy['uploaded_by'] = st.session_state.get("username", "Unknown")
                 batch_data.append(doc_copy)
             data_col.insert_many(batch_data)
-            st.toast("Data automatically saved to Database!", icon="💾")
+            # Optional: st.toast("Data automatically backed up!", icon="💾")
     except Exception as e:
         print(f"Auto-save failed: {e}")
-        st.toast(f"Auto-save failed: {e}", icon="⚠️")
+        # st.toast(f"Auto-save failed: {e}", icon="⚠️")
 
     # --- 3. [ADDED] Save PDF Binary to DB (Your Requested Logic) ---
     if pdf_data is not None:
         try:
             reports_col = db["daily_pdf_storage"]
-            
+             
             # Use provided filename or generate default
             fname = file_name_for_db if file_name_for_db else f"Report_{now_ist.strftime('%Y%m%d_%H%M%S')}.pdf"
-            
+             
             report_doc = {
                 "upload_date": now_ist.strftime("%Y-%m-%d"), # Key for querying later
                 "upload_time": now_ist.strftime("%H:%M:%S"),
@@ -444,19 +583,19 @@ body[data-layout="centered"] .stRadio [data-baseweb="radio"][data-checked="true"
     /* Adjust headings size */
     h1 { font-size: 1.8rem !important; }
     h2 { font-size: 1.4rem !important; }
-    
+     
     /* Remove heavy padding from containers to use full width */
     [data-testid="stVerticalBlockBorderWrapper"] {
         padding: 8px !important;
         margin-bottom: 10px !important;
     }
-    
+     
     /* Ensure buttons wrap properly */
     [data-testid="stButton"] button {
         width: 100% !important;
         margin-bottom: 5px;
     }
-    
+     
     /* Adjust table font size if used */
     [data-testid="stDataFrame"] {
         font-size: 12px;
@@ -507,7 +646,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 self.set_font('Arial', 'B', 18)
                 self.set_text_color(0, 0, 0) # Black
                 self.cell(0, 10, "Sauda Report", 0, 1, 'C')
-                
+                 
                 # 2. Timestamp
                 now_ist = get_ist_time()
                 today_str = now_ist.strftime("%d %B, %Y at %I:%M %p IST")
@@ -517,7 +656,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
 
                 # Add padding after header
                 self.ln(10)
-            
+             
             elif self.page_no() > 1:
                 self.set_font('Arial', 'I', 9)
                 self.set_text_color(128)
@@ -558,7 +697,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
         broker_summary = {}   # {"Base_Price": {"Broker": {"total_lorries": count, "area_breakdown": {"Area": count}}}}
         unit_summary = {}     # {"Base_Price": {"Unit": {"Area": count}}}
         base_price_summary = {}    # {"Base_Price": count}
-        
+         
         grand_total_lorries = 0
         grand_total_unit_lorries = 0
 
@@ -572,17 +711,17 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     broker_name = sauda.get('Broker', 'UNKNOWN')
                     if broker_name is None or str(broker_name).strip() == "":
                         broker_name = 'UNKNOWN'
-                    
+                     
                     base_price_val = sauda.get('Base_Price', 'N/A')
                     if base_price_val is None or str(base_price_val).strip() == "":
                         base_price_val = 'N/A'
-                    
+                     
                     try:
                         lorries_val = sauda.get('No_of_Lorries', 0)
                         lorries = int(lorries_val) if lorries_val is not None else 0
                     except (ValueError, TypeError):
                         lorries = 0
-                    
+                     
                     if base_price_val not in area_summary:
                         area_summary[base_price_val] = {}
                     if base_price_val not in broker_summary:
@@ -591,27 +730,27 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         unit_summary[base_price_val] = {}
 
                     area_summary[base_price_val][area] = area_summary[base_price_val].get(area, 0) + lorries
-                    
+                     
                     if broker_name not in broker_summary[base_price_val]:
                         broker_summary[base_price_val][broker_name] = {"total_lorries": 0, "area_breakdown": {}}
                     broker_summary[base_price_val][broker_name]["total_lorries"] += lorries
                     broker_summary[base_price_val][broker_name]["area_breakdown"][area] = broker_summary[base_price_val][broker_name]["area_breakdown"].get(area, 0) + lorries
-                    
+                     
                     base_price_summary[base_price_val] = base_price_summary.get(base_price_val, 0) + lorries
                     grand_total_lorries += lorries
 
                     raw_unit_str = sauda.get('Unit', '')
                     if raw_unit_str:
                         matches = re.findall(r"([A-Za-z0-9]+)\s*[-:]\s*(\d+)", str(raw_unit_str))
-                        
+                         
                         for mill_code, count_str in matches:
                             try:
                                 u_count = int(count_str)
                                 mill_code = mill_code.strip().upper()
-                                
+                                 
                                 if mill_code not in unit_summary[base_price_val]:
                                     unit_summary[base_price_val][mill_code] = {}
-                                
+                                 
                                 unit_summary[base_price_val][mill_code][area] = unit_summary[base_price_val][mill_code].get(area, 0) + u_count
                                 grand_total_unit_lorries += u_count
                             except ValueError:
@@ -620,7 +759,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
         # --- Part 2: Create Summary PDF Page ---
         if dl_area_summary or dl_broker_summary or dl_unit_summary:
             pdf.add_page()
-            
+             
             if dl_area_summary:
                 pdf.set_font("Arial", 'B', 16)
                 pdf.set_text_color(0, 0, 0)
@@ -736,7 +875,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
 
             if dl_unit_summary:
                 if pdf.get_y() > 200: pdf.add_page()
-                
+                 
                 pdf.set_font("Arial", 'B', 16)
                 pdf.set_text_color(0, 0, 0)
                 pdf.cell(0, 10, 'Unit-Area wise Lorry Summary', 0, 1, 'C')
@@ -759,21 +898,21 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     pdf.cell(col_width_total, 8, 'Total', 1, 1, 'C', fill=True)
 
                     pdf.set_font("Arial", '', 9)
-                    
+                     
                     if not basis_unit_summary:
                         pdf.cell(190, 10, "No Unit/Mill data extracted for this base price.", 1, 1, 'C')
 
                     basis_total_unit_lorries = 0
                     for unit_name, areas in sorted(basis_unit_summary.items()):
                         unit_text = f' {safe_txt(unit_name)}'
-                        
+                         
                         breakdown_items = []
                         row_total = 0
                         for area_name, count in areas.items():
                             if count > 0:
                                 breakdown_items.append(f"{area_name}: {count}")
                                 row_total += count
-                        
+                         
                         basis_total_unit_lorries += row_total
                         breakdown_text = f' {safe_txt(", ".join(breakdown_items))}'
                         total_text = str(row_total)
@@ -794,7 +933,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                             start_y = pdf.get_y()
 
                         pdf.set_text_color(0, 0, 0)
-                        
+                         
                         pdf.set_xy(start_x, start_y)
                         pdf.multi_cell(col_width_unit, 6, unit_text, border=0, align='L')
                         pdf.set_xy(start_x + col_width_unit, start_y)
@@ -806,7 +945,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.rect(start_x, start_y, col_width_unit, row_height)
                         pdf.rect(start_x + col_width_unit, start_y, col_width_breakdown, row_height)
                         pdf.rect(start_x + col_width_unit + col_width_breakdown, start_y, col_width_total, row_height)
-                        
+                         
                         pdf.set_y(start_y + row_height)
 
                     pdf.set_font("Arial", 'B', 10)
@@ -814,7 +953,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                     pdf.cell(col_width_total, 8, str(basis_total_unit_lorries), 1, 1, 'C')
                     pdf.ln(5)
                 pdf.ln(5)
-            
+             
             if pdf.get_y() > 220: pdf.add_page()
             pdf.set_font("Arial", 'B', 16)
             pdf.cell(0, 10, 'Base Price-wise Lorry Summary', 0, 1, 'C')
@@ -841,10 +980,10 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
             }
             headers = ["Base Price", "Broker", "Area", "Mukkam", "Bales Mark", "Lorries", "Bales", "Grades", "Rates", "Unit"]
             header_keys = ["Base_Price", "Broker", "Area", "Mukkam", "Bales_Mark", "No_of_Lorries", "No_of_Bales", "Grades", "Rates", "Unit"]
-            
+             
             for i, page_data in enumerate(data_list):
                 pdf.add_page()
-                
+                 
                 pdf.set_text_color(0, 0, 0)
                 pdf.set_font("Arial", 'B', 16)
                 pdf.cell(0, 10, 'Sauda Details', 0, 1, 'C')
@@ -853,7 +992,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 pdf.cell(95, 8, f"Page Date: {page_data.get('PAGE_DATE', 'N/A')}", 0, 0, 'L')
                 pdf.cell(95, 8, f"TD5 Base Price: {page_data.get('OPENING_PRICE', 'N/A')}", 0, 1, 'R')
                 pdf.ln(5)
-                
+                 
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_fill_color(230, 230, 230)
                 for j, header in enumerate(headers):
@@ -862,7 +1001,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                 pdf.ln()
 
                 pdf.set_font("Arial", '', 8)
-                
+                 
                 saudas_list = page_data.get('saudas', [])
                 page_total_lorries = 0 
 
@@ -877,7 +1016,7 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
 
                     grades_str = ", ".join(map(str, sauda.get('Grades', []))) if isinstance(sauda.get('Grades'), list) else str(sauda.get('Grades', ''))
                     rates_str = ", ".join(map(str, sauda.get('Rates', []))) if isinstance(sauda.get('Rates'), list) else str(sauda.get('Rates', ''))
-                    
+                     
                     sauda_data = {
                         "Base_Price": str(sauda.get('Base_Price', '')),
                         "Broker": str(sauda.get('Broker', '')),
@@ -928,13 +1067,13 @@ def create_pdf(json_text, dl_area_summary, dl_broker_summary, dl_sauda_details, 
                         pdf.rect(current_x, start_y, col_widths[key], max_h)
                         current_x += col_widths[key]
                     pdf.set_y(start_y + max_h)
-                
+                 
                 if saudas_list:
                     pdf.set_font("Arial", 'B', 9)
                     label_width = col_widths['Base_Price'] + col_widths['Broker'] + col_widths['Area'] + col_widths['Mukkam'] + col_widths['Bales_Mark']
                     lorry_width = col_widths['No_of_Lorries']
                     empty_width = col_widths['No_of_Bales'] + col_widths['Grades'] + col_widths['Rates'] + col_widths['Unit']
-                    
+                     
                     pdf.cell(label_width, 8, 'Total Number of Lorry(s)', 1, 0, 'C')
                     pdf.cell(lorry_width, 8, str(page_total_lorries), 1, 0, 'C')
                     pdf.cell(empty_width, 8, '', 1, 1, 'C')
@@ -1028,7 +1167,7 @@ def get_json_from_image(image_bytes, api_key):
     try:
         img = Image.open(io.BytesIO(image_bytes))
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-pro')
 
         prompt_text = """
 You are a specialized Data Extraction Engine for handwritten "Jute Sauda" (deal) ledgers. Your ONLY task is to analyze an image of a ledger page and convert ALL entries on that page into a **single, structured JSON object**.
@@ -4025,6 +4164,7 @@ Your output MUST be a **single JSON object** (`{}`). Do not include *any* introd
   ]
 }
 """
+
         response = model.generate_content([prompt_text, img])
         ai_response_text = response.text
 
@@ -4143,6 +4283,58 @@ def delete_sauda_row():
             else:
                 st.toast("Invalid Row Number", icon="⚠️")
 
+# --- [MODIFIED] Save to MongoDB (Includes Auto-Push to SAP) ---
+def save_to_mongodb(app_user, mongo_user, mongo_pass, cluster_url, json_text):
+    """
+    Connects to MongoDB and inserts the JSON data for documents.
+    NOW INCLUDES THE APP USER AND TIMESTAMP.
+    """
+     
+    if not json_text or json_text.strip() == "[]":
+        return False, "Cannot save. The extracted data is empty."
+         
+    try:
+        escaped_user = quote_plus(mongo_user)
+        escaped_pass = quote_plus(mongo_pass)
+        connection_string = f"mongodb+srv://{escaped_user}:{escaped_pass}@{cluster_url}"
+         
+        client = MongoClient(connection_string, server_api=ServerApi('1'))
+        client.admin.command('ping')
+         
+        db = client["ocr_project"]
+        collection = db["extractions"]  # This saves to the 'extractions' collection
+         
+        # Data is a list of document objects
+        data_list = json.loads(json_text)
+         
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+         
+        if not data_list:
+            return False, "Cannot save. The extracted data is empty."
+
+        # --- Add log data to each record ---
+        log_time = datetime.datetime.now(datetime.timezone.utc)
+        log_data = {
+            "saved_by_user": app_user,
+            "saved_at_utc": log_time
+        }
+         
+        for doc in data_list:
+            doc["_app_log"] = log_data
+
+        result = collection.insert_many(data_list)
+         
+        return True, f"Data saved to MongoDB successfully by {app_user}."
+         
+    except Exception as e:
+        print(f"MongoDB Error: {e}")
+        if "Authentication failed" in str(e):
+            return False, "Failed to save data: MongoDB Authentication failed. Check credentials."
+        elif "could not be reached" in str(e):
+            return False, "Failed to save data: Cannot connect to MongoDB. Check cluster URL and network access."
+        return False, f"Failed to save data: {e}"
+
 # --- Main App UI ---
 if True:  
     st.set_page_config(
@@ -4187,7 +4379,8 @@ if True:
                 4.  **Extract Data:** Click the 'Extract Data' button. The AI will process all files.
                 5.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, TD5 Base Price, and all Sauda entries.
                 6.  **Download:** Click 'Download as PDF' to download the report AND automatically save data to the database.
-                7.  **Reset:** Click "Reset Process" to start over.
+                7.  **Save to Database:** This will save to MongoDB AND immediately sync to SAP S/4HANA.
+                8.  **Reset:** Click "Reset Process" to start over.
             """)
             st.write("---")
             st.write("To change themes, click the `...` in the top-right, go to `Settings`, and choose `Light` or `Dark`.")
@@ -4323,7 +4516,7 @@ if True:
                                             img_bytes = uploaded_file.getvalue()
                                             images_to_process.append(img_bytes)
                                             image_names.append(file_name)
-                                preprocess_bar.empty()
+                                    preprocess_bar.empty()
 
                                 total_images_to_process = len(images_to_process)
                                 if total_images_to_process > 0:
@@ -4352,7 +4545,7 @@ if True:
 
         # --- 4. Step 2 & 3: Review, Edit, & Download ---
         if st.session_state.extraction_done and st.session_state.result_list:
-            
+             
             with st.container(border=True):
                 st.header("Step 2: Review & Edit Data")
 
@@ -4399,15 +4592,15 @@ if True:
                         with st.expander(f"Entry #{i+1} - {sauda.get('Broker', 'Unknown')}", expanded=False):
                             c0 = st.columns(1)[0]
                             current_document['saudas'][i]['Base_Price'] = c0.text_input("Base Price", sauda.get('Base_Price', ''), key=f"m_base_price_{current_index}_{i}")
-                            
+                             
                             c1, c2 = st.columns(2)
                             current_document['saudas'][i]['Broker'] = c1.text_input("Broker", sauda.get('Broker', ''), key=f"m_brk_{current_index}_{i}")
                             current_document['saudas'][i]['Area'] = c2.text_input("Area", sauda.get('Area', ''), key=f"m_area_{current_index}_{i}")
-                            
+                             
                             c3, c4 = st.columns(2)
                             current_document['saudas'][i]['Mukkam'] = c3.text_input("Mukkam", sauda.get('Mukkam', ''), key=f"m_muk_{current_index}_{i}")
                             current_document['saudas'][i]['Bales_Mark'] = c4.text_input("Bales Mark", sauda.get('Bales_Mark', ''), key=f"m_bm_{current_index}_{i}")
-                            
+                             
                             c5, c6 = st.columns(2)
                             current_document['saudas'][i]['No_of_Lorries'] = c5.number_input("Lorries", value=int(sauda.get('No_of_Lorries', 0)), key=f"m_lor_{current_index}_{i}")
                             current_document['saudas'][i]['No_of_Bales'] = c6.text_input("Bales", str(sauda.get('No_of_Bales', '')), key=f"m_bal_{current_index}_{i}")
@@ -4458,16 +4651,20 @@ if True:
 
                 st.divider()
 
-                # --- Download & Email Section ---
-                st.subheader("Step 3: Export Options")
+            # --- STEP 3: EXPORT OPTIONS (SEPARATED AS REQUESTED) ---
+            st.subheader("Step 3: Export Options")
 
-                try:
-                    full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
-                except Exception as e:
-                    st.error(f"Could not prepare data for download. Error: {e}")
-                    full_edited_json_text = "[]"
+            try:
+                full_edited_json_text = json.dumps(st.session_state.result_list, indent=2)
+            except Exception as e:
+                st.error(f"Could not prepare data for download. Error: {e}")
+                full_edited_json_text = "[]"
 
-                st.write("Select sections to include in your PDF report:")
+            # --- CONTAINER A: PDF GENERATION & DOWNLOAD ---
+            with st.container(border=True):
+                st.markdown("### 📄 Generate & Download Report")
+                st.caption("Select sections to include in your PDF report:")
+                
                 dl_col1, dl_col2, dl_col3 = st.columns(3)
                 with dl_col1:
                     dl_area_summary = st.checkbox("Area-wise Lorry Summary", value=True)
@@ -4534,8 +4731,42 @@ if True:
                                     )
                                     if success:
                                         st.success(f"✅ Report sent to {email_recipient}!")
+            
+            # --- CONTAINER B: DATABASE & SAP SYNC (COMPLETELY SEPARATE) ---
+            st.write("") # Spacer
+            with st.container(border=True):
+                st.markdown("### 💾 Database & SAP Integration")
+                st.caption("Push final data to MongoDB Cloud and SAP S/4HANA System.")
+                
+                # Check for password
+                if not SAP_PASSWORD:
+                    st.warning("⚠️ SAP Password is not set in the configuration. Please update the code or secrets.")
 
-
-
-
-
+                if st.button("🚀 Save All to MongoDB & SAP", use_container_width=True, type="primary"):
+                    if not st.session_state.result_list:
+                        st.error("No data to save!")
+                    else:
+                        try:
+                            # 1. Save to MongoDB
+                            full_json = json.dumps(st.session_state.result_list, default=str)
+                            mongo_success, mongo_msg = save_to_mongodb(
+                                st.session_state.username, MONGO_USER, MONGO_PASSWORD, MONGO_CLUSTER_URL, full_json
+                            )
+                            
+                            if mongo_success:
+                                st.success(f"✅ {mongo_msg}")
+                                
+                                # 2. Auto-Push to SAP (Deep Insert)
+                                with st.spinner("⏳ Syncing with SAP S/4HANA (Deep Insert)..."):
+                                    sap_success, sap_msg = upload_to_sap(st.session_state.result_list)
+                                    
+                                    if sap_success:
+                                        st.success(sap_msg)
+                                        st.balloons()
+                                    else:
+                                        st.error(f"⚠️ Saved to DB, but SAP Sync Failed: {sap_msg}")
+                            else:
+                                st.error(mongo_msg)
+                                
+                        except Exception as e:
+                            st.error(f"Error during save process: {e}")
