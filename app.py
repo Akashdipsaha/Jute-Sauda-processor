@@ -15,32 +15,48 @@ import matplotlib.pyplot as plt
 import tempfile
 import os
 
-# --- NEW IMPORTS FOR EMAIL & DB STORAGE ---
+# --- NEW IMPORTS FOR EMAIL, DB & SAP ---
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
-# --- ADDED AS REQUESTED ---
 from bson.binary import Binary 
+import requests
+from requests.auth import HTTPBasicAuth
+import urllib3
 
-MY_API_KEY = "AIzaSyCBoHaw6LdDcXF1tg3oloV7_e0tTrJyj84" 
+# Suppress insecure request warnings for SAP self-signed certs
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- CONFIGURATION ---
+MY_API_KEY = "AIzaSyCELM8Bx9zWHO4ED-9aqNRhzFAq8Dp6T9k" 
 MONGO_USER = "Akashdip_Saha"
 MONGO_PASSWORD = "STIL@12345"
 MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
-# --- 1. LOAD SECRETS SAFELY ---
+
+# --- SAP CONFIGURATION (VERIFIED) ---
+SAP_HOST = "https://vhstids4ci.hec.jute-india.com:44300"
+# This combines Host + Service Path + EntitySet
+SAP_SERVICE_URL = f"{SAP_HOST}/sap/opu/odata/sap/ZSAUDA_OCR_PR_SRV/SaudaHeaderSet"
+# Details from your screenshot (Bottom Right Corner: DS4 (1) 100)
+SAP_CLIENT = "100" 
+SAP_USERNAME = "SGET09"      # User provided
+SAP_PASSWORD = "ElBicho@12"  # <--- ⚠️ UPDATE THIS WITH YOUR PASSWORD
+
+# --- 1. LOAD SECRETS SAFELY (Optional override from secrets.toml) ---
 try:
-    # Try loading from secrets.toml first
-    MY_API_KEY = st.secrets["general"]["api_key"]
-    MONGO_USER = st.secrets["mongo"]["username"]
-    MONGO_PASSWORD = st.secrets["mongo"]["password"]
-    MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
+    if "general" in st.secrets:
+        MY_API_KEY = st.secrets["general"]["api_key"]
+    if "mongo" in st.secrets:
+        MONGO_USER = st.secrets["mongo"]["username"]
+        MONGO_PASSWORD = st.secrets["mongo"]["password"]
+        MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
+    if "sap" in st.secrets:
+        SAP_USERNAME = st.secrets["sap"]["username"]
+        SAP_PASSWORD = st.secrets["sap"]["password"]
 except Exception:
-    # Fallback to your hardcoded values if secrets file is missing (for safety)
-    MY_API_KEY = "AIzaSyCBoHaw6LdDcXF1tg3oloV7_e0tTrJyj84"
-    MONGO_USER = "Akashdip_Saha"
-    MONGO_PASSWORD = "STIL@12345"
-    MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
+    pass 
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
@@ -76,7 +92,6 @@ def get_ist_time():
 def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf"):
     """
     Sends the generated PDF via email using credentials from st.secrets.
-    Uses HTML formatting for a professional look.
     """
     try:
         sender_email = st.secrets["email"]["sender_email"]
@@ -136,6 +151,113 @@ def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf")
     except Exception as e:
         st.error(f"Failed to send email: {e}")
         return False
+
+# --- SAP INTEGRATION FUNCTIONS (NEW) ---
+def transform_to_sap_payload(doc):
+    """
+    Converts one Streamlit Document object into SAP OData Deep Insert format.
+    """
+    # Create a unique ID string (e.g., DATE_PRICE_TIMESTAMP) to act as key
+    # Adding timestamp to ensure uniqueness even if date/price is same
+    timestamp_suffix = datetime.datetime.now().strftime('%H%M%S%f')
+    unique_id = f"{doc.get('PAGE_DATE', 'UNKNOWN')}_{doc.get('OPENING_PRICE', '0')}_{timestamp_suffix}"[:50] # Limit length
+    
+    # 1. Map Header Fields
+    sap_payload = {
+        "Zid":      str(unique_id).replace("/", "-").replace(" ", ""), 
+        "PageDate": str(doc.get("PAGE_DATE", "")),
+        "OpPrice":  str(doc.get("OPENING_PRICE", "")),
+        "UpBy":     st.session_state.username,
+        "UpAt":     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "saudas":   [] 
+    }
+
+    # 2. Map Item Fields
+    for item in doc.get("saudas", []):
+        
+        # Helper to clean list/string formats
+        def clean_val(val):
+            if isinstance(val, list):
+                return ", ".join(map(str, val))
+            return str(val) if val else ""
+
+        sap_item = {
+            # Fields that are per-row in your JSON
+            "Broker":   clean_val(item.get("Broker")),
+            "Area":     clean_val(item.get("Area")),
+            "Mukkam":   clean_val(item.get("Mukkam")),
+            "Bales":    clean_val(item.get("No_of_Bales")),
+            "Grades":   clean_val(item.get("Grades")),
+            "Rates":    clean_val(item.get("Rates")),
+            "Unit":     clean_val(item.get("Unit")),
+            "BasePr":   clean_val(item.get("Base_Price")),
+            "Lorries":  str(item.get("No_of_Lorries", "0")),
+            "BalMark":  clean_val(item.get("Bales_Mark"))
+        }
+        sap_payload["saudas"].append(sap_item)
+
+    return sap_payload
+
+def upload_to_sap(doc_list):
+    """
+    Loops through documents and sends them to SAP one by one.
+    """
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(SAP_USERNAME, SAP_PASSWORD)
+    
+    success_count = 0
+    errors = []
+
+    # 1. Fetch CSRF Token (Security Requirement)
+    try:
+        # Base service URL for Token Fetch (remove EntitySet)
+        service_root = SAP_SERVICE_URL.replace("/SaudaHeaderSet", "/")
+        params = {"sap-client": SAP_CLIENT}
+        
+        # Disable SSL verification for local testing (verify=False)
+        r_head = session.get(service_root, headers={"x-csrf-token": "fetch"}, params=params, verify=False)
+        csrf_token = r_head.headers.get("x-csrf-token")
+        
+        if not csrf_token:
+            return False, "Could not fetch SAP CSRF Token. Check VPN connection."
+            
+    except Exception as e:
+        return False, f"Connection Error: {str(e)}"
+
+    # 2. Post Data
+    headers = {
+        "x-csrf-token": csrf_token,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    for i, doc in enumerate(doc_list):
+        try:
+            payload = transform_to_sap_payload(doc)
+            r_post = session.post(SAP_SERVICE_URL, json=payload, headers=headers, params=params, verify=False)
+            
+            if r_post.status_code == 201: # 201 Created
+                success_count += 1
+            else:
+                # Try to get error message from SAP response
+                err_msg = f"Doc {i+1} Failed ({r_post.status_code})"
+                try:
+                    err_json = r_post.json()
+                    err_msg += f": {err_json['error']['message']['value']}"
+                except:
+                    err_msg += f": {r_post.text[:100]}"
+                errors.append(err_msg)
+                
+        except Exception as e:
+            errors.append(f"Doc {i+1} Exception: {str(e)}")
+
+    if success_count == len(doc_list):
+        return True, f"Successfully uploaded {success_count} documents to SAP!"
+    elif success_count > 0:
+        return True, f"Partial Success: {success_count} uploaded. Errors: {'; '.join(errors)}"
+    else:
+        return False, f"All SAP uploads failed. Errors: {'; '.join(errors)}"
+
 
 # --- UPDATED: DOWNLOAD HANDLER (Merged with your requested logic) ---
 def save_and_log_download(event_name="PDF Download", details="User downloaded the Sauda Report PDF", pdf_data=None, file_name_for_db=None):
@@ -4143,6 +4265,164 @@ def delete_sauda_row():
             else:
                 st.toast("Invalid Row Number", icon="⚠️")
 
+# --- [NEW] SAP INTEGRATION FUNCTIONS ---
+def transform_to_sap_payload(doc):
+    """
+    Converts one Streamlit Document object into SAP OData Deep Insert format.
+    """
+    # Create a unique ID string (e.g., DATE_PRICE_TIMESTAMP) to act as key
+    # Adding timestamp to ensure uniqueness even if date/price is same
+    timestamp_suffix = datetime.datetime.now().strftime('%H%M%S%f')
+    unique_id = f"{doc.get('PAGE_DATE', 'UNKNOWN')}_{doc.get('OPENING_PRICE', '0')}_{timestamp_suffix}"[:50] # Limit length
+    
+    # 1. Map Header Fields
+    sap_payload = {
+        "Zid":      str(unique_id).replace("/", "-").replace(" ", ""), 
+        "PageDate": str(doc.get("PAGE_DATE", "")),
+        "OpPrice":  str(doc.get("OPENING_PRICE", "")),
+        "UpBy":     st.session_state.username,
+        "UpAt":     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "saudas":   [] 
+    }
+
+    # 2. Map Item Fields
+    for item in doc.get("saudas", []):
+        
+        # Helper to clean list/string formats
+        def clean_val(val):
+            if isinstance(val, list):
+                return ", ".join(map(str, val))
+            return str(val) if val else ""
+
+        sap_item = {
+            # Fields that are per-row in your JSON
+            "Broker":   clean_val(item.get("Broker")),
+            "Area":     clean_val(item.get("Area")),
+            "Mukkam":   clean_val(item.get("Mukkam")),
+            "Bales":    clean_val(item.get("No_of_Bales")),
+            "Grades":   clean_val(item.get("Grades")),
+            "Rates":    clean_val(item.get("Rates")),
+            "Unit":     clean_val(item.get("Unit")),
+            "BasePr":   clean_val(item.get("Base_Price")),
+            "Lorries":  str(item.get("No_of_Lorries", "0")),
+            "BalMark":  clean_val(item.get("Bales_Mark"))
+        }
+        sap_payload["saudas"].append(sap_item)
+
+    return sap_payload
+
+def upload_to_sap(doc_list):
+    """
+    Loops through documents and sends them to SAP one by one.
+    """
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(SAP_USERNAME, SAP_PASSWORD)
+    
+    success_count = 0
+    errors = []
+
+    # 1. Fetch CSRF Token (Security Requirement)
+    try:
+        # Base service URL for Token Fetch (remove EntitySet)
+        service_root = SAP_SERVICE_URL.replace("/SaudaHeaderSet", "/")
+        params = {"sap-client": SAP_CLIENT}
+        
+        # Disable SSL verification for local testing (verify=False)
+        r_head = session.get(service_root, headers={"x-csrf-token": "fetch"}, params=params, verify=False)
+        csrf_token = r_head.headers.get("x-csrf-token")
+        
+        if not csrf_token:
+            return False, "Could not fetch SAP CSRF Token. Check VPN connection."
+            
+    except Exception as e:
+        return False, f"Connection Error: {str(e)}"
+
+    # 2. Post Data
+    headers = {
+        "x-csrf-token": csrf_token,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    for i, doc in enumerate(doc_list):
+        try:
+            payload = transform_to_sap_payload(doc)
+            r_post = session.post(SAP_SERVICE_URL, json=payload, headers=headers, params=params, verify=False)
+            
+            if r_post.status_code == 201: # 201 Created
+                success_count += 1
+            else:
+                # Try to get error message from SAP response
+                err_msg = f"Doc {i+1} Failed ({r_post.status_code})"
+                try:
+                    err_json = r_post.json()
+                    err_msg += f": {err_json['error']['message']['value']}"
+                except:
+                    err_msg += f": {r_post.text[:100]}"
+                errors.append(err_msg)
+                
+        except Exception as e:
+            errors.append(f"Doc {i+1} Exception: {str(e)}")
+
+    if success_count == len(doc_list):
+        return True, f"Successfully uploaded {success_count} documents to SAP!"
+    elif success_count > 0:
+        return True, f"Partial Success: {success_count} uploaded. Errors: {'; '.join(errors)}"
+    else:
+        return False, f"All SAP uploads failed. Errors: {'; '.join(errors)}"
+
+# --- [MODIFIED] Save to MongoDB (Includes Auto-Push to SAP) ---
+def save_to_mongodb(app_user, mongo_user, mongo_pass, cluster_url, json_text):
+    """
+    Connects to MongoDB and inserts the JSON data for documents.
+    NOW INCLUDES THE APP USER AND TIMESTAMP.
+    """
+    
+    if not json_text or json_text.strip() == "[]":
+        return False, "Cannot save. The extracted data is empty."
+        
+    try:
+        escaped_user = quote_plus(mongo_user)
+        escaped_pass = quote_plus(mongo_pass)
+        connection_string = f"mongodb+srv://{escaped_user}:{escaped_pass}@{cluster_url}"
+        
+        client = MongoClient(connection_string, server_api=ServerApi('1'))
+        client.admin.command('ping')
+        
+        db = client["ocr_project"]
+        collection = db["extractions"]  # This saves to the 'extractions' collection
+        
+        # Data is a list of document objects
+        data_list = json.loads(json_text)
+        
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+        
+        if not data_list:
+            return False, "Cannot save. The extracted data is empty."
+
+        # --- Add log data to each record ---
+        log_time = datetime.datetime.now(datetime.timezone.utc)
+        log_data = {
+            "saved_by_user": app_user,
+            "saved_at_utc": log_time
+        }
+        
+        for doc in data_list:
+            doc["_app_log"] = log_data
+
+        result = collection.insert_many(data_list)
+        
+        return True, f"Data saved to MongoDB successfully by {app_user}."
+        
+    except Exception as e:
+        print(f"MongoDB Error: {e}")
+        if "Authentication failed" in str(e):
+            return False, "Failed to save data: MongoDB Authentication failed. Check credentials."
+        elif "could not be reached" in str(e):
+            return False, "Failed to save data: Cannot connect to MongoDB. Check cluster URL and network access."
+        return False, f"Failed to save data: {e}"
+
 # --- Main App UI ---
 if True:  
     st.set_page_config(
@@ -4187,7 +4467,8 @@ if True:
                 4.  **Extract Data:** Click the 'Extract Data' button. The AI will process all files.
                 5.  **Review & Edit:** The AI extracts **one JSON per image/page**. Use the form in Step 2 to edit the Page Date, TD5 Base Price, and all Sauda entries.
                 6.  **Download:** Click 'Download as PDF' to download the report AND automatically save data to the database.
-                7.  **Reset:** Click "Reset Process" to start over.
+                7.  **Save to Database:** This will save to MongoDB AND immediately sync to SAP S/4HANA.
+                8.  **Reset:** Click "Reset Process" to start over.
             """)
             st.write("---")
             st.write("To change themes, click the `...` in the top-right, go to `Settings`, and choose `Light` or `Dark`.")
@@ -4323,7 +4604,7 @@ if True:
                                             img_bytes = uploaded_file.getvalue()
                                             images_to_process.append(img_bytes)
                                             image_names.append(file_name)
-                                preprocess_bar.empty()
+                                    preprocess_bar.empty()
 
                                 total_images_to_process = len(images_to_process)
                                 if total_images_to_process > 0:
@@ -4534,7 +4815,33 @@ if True:
                                     )
                                     if success:
                                         st.success(f"✅ Report sent to {email_recipient}!")
-
-
-
-
+                
+                st.divider()
+                
+                # --- [MODIFIED] SAVE BUTTON ---
+                st.subheader("Step 3: Save & Sync")
+                
+                if st.button("💾 Save All to MongoDB & SAP", use_container_width=True, type="primary"):
+                    try:
+                        # 1. Save to MongoDB
+                        full_json = json.dumps(st.session_state.result_list)
+                        mongo_success, mongo_msg = save_to_mongodb(
+                            st.session_state.username, MONGO_USER, MONGO_PASSWORD, MONGO_CLUSTER_URL, full_json
+                        )
+                        
+                        if mongo_success:
+                            st.success(f"✅ {mongo_msg}")
+                            
+                            # 2. AUTO-PUSH TO SAP (Chained Event)
+                            with st.spinner("⏳ Syncing with SAP S/4HANA..."):
+                                sap_success, sap_msg = upload_to_sap(st.session_state.result_list)
+                                if sap_success:
+                                    st.success(sap_msg)
+                                    st.balloons()
+                                else:
+                                    st.error(f"⚠️ Saved to DB, but SAP Sync Failed: {sap_msg}")
+                        else:
+                            st.error(mongo_msg)
+                            
+                    except Exception as e:
+                        st.error(f"Error during save process: {e}")
