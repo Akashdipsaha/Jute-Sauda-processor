@@ -25,39 +25,24 @@ from bson.binary import Binary
 import requests
 from requests.auth import HTTPBasicAuth
 import urllib3
-import fitz  
+import fitz  # PyMuPDF for PDF handling
 
 # Suppress insecure request warnings for SAP self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CONFIGURATION ---
-MY_API_KEY = "AIzaSyBi26lZySMpOgwO4-9RuQ5GdkZFCy9vGRo" 
-MONGO_USER = "Akashdip_Saha"
-MONGO_PASSWORD = "STIL@12345"
-MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
+# --- CONFIGURATION FROM GITHUB SECRETS / ENVIRONMENT VARIABLES ---
+# These match the names in your GitHub Secrets screenshot exactly
+MY_API_KEY = os.environ.get("MY_API_KEY")
+MONGO_USER = os.environ.get("MONGO_USER")
+MONGO_PASSWORD = os.environ.get("MONGO_PASS") # Screenshot says MONGO_PASS
+MONGO_CLUSTER_URL = os.environ.get("MONGO_URL") # Screenshot says MONGO_URL
 
-# --- SAP CONFIGURATION (VERIFIED) ---
-SAP_HOST = "https://192.168.102.18:44300"
-# This combines Host + Service Path + EntitySet
-SAP_SERVICE_URL = f"{SAP_HOST}/sap/opu/odata/sap/ZSAUDA_OCR_PR_SRV/SaudaHeaderSet"
-# Details from your screenshot (Bottom Right Corner: DS4 (1) 100)
-SAP_CLIENT = "100" 
-SAP_USERNAME = "SGET09"      # User provided
-SAP_PASSWORD = "ElBicho@12"  # <--- ⚠️ UPDATE THIS WITH YOUR PASSWORD
-
-# --- 1. LOAD SECRETS SAFELY (Optional override from secrets.toml) ---
-try:
-    if "general" in st.secrets:
-        MY_API_KEY = st.secrets["general"]["api_key"]
-    if "mongo" in st.secrets:
-        MONGO_USER = st.secrets["mongo"]["username"]
-        MONGO_PASSWORD = st.secrets["mongo"]["password"]
-        MONGO_CLUSTER_URL = st.secrets["mongo"]["cluster_url"]
-    if "sap" in st.secrets:
-        SAP_USERNAME = st.secrets["sap"]["username"]
-        SAP_PASSWORD = st.secrets["sap"]["password"]
-except Exception:
-    pass 
+# --- SAP CONFIGURATION ---
+SAP_HOST = os.environ.get("SAP_HOST")
+SAP_SERVICE_URL = os.environ.get("SAP_SERVICE_URL")
+SAP_CLIENT = os.environ.get("SAP_CLIENT")
+SAP_USERNAME = os.environ.get("SAP_USERNAME")
+SAP_PASSWORD = os.environ.get("SAP_PASSWORD")
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
@@ -65,7 +50,7 @@ def get_mongo_connection():
     """Establishes and returns a MongoDB client and the user collection."""
     try:
         if not MONGO_USER or not MONGO_PASSWORD or not MONGO_CLUSTER_URL:
-            st.error("MongoDB secrets are not loaded. Cannot connect.")
+            st.error("MongoDB secrets are not loaded from Environment. Cannot connect.")
             return None
              
         escaped_user = quote_plus(MONGO_USER)
@@ -92,15 +77,23 @@ def get_ist_time():
 # --- FUNCTION: Send Email (Directly from App) ---
 def send_email_with_pdf(recipient_email, pdf_bytes, filename="sauda_report.pdf"):
     """
-    Sends the generated PDF via email using credentials from st.secrets.
+    Sends the generated PDF via email using credentials from Environment Variables.
     """
     try:
-        sender_email = st.secrets["email"]["sender_email"]
-        sender_password = st.secrets["email"]["sender_password"]
-        smtp_server = st.secrets["email"]["smtp_server"]
-        smtp_port = st.secrets["email"]["smtp_port"]
-    except Exception:
-        st.error("❌ Email secrets not configured! Check .streamlit/secrets.toml")
+        # Using environment variables from your screenshot
+        sender_email = os.environ.get("SENDER_EMAIL")
+        sender_password = os.environ.get("SENDER_PASS") 
+        
+        # Defaulting to Gmail settings as implied by your other script
+        smtp_server = "smtp.gmail.com" 
+        smtp_port = 587
+        
+        if not sender_email or not sender_password:
+            st.error("❌ Email credentials (SENDER_EMAIL/SENDER_PASS) not found in environment variables.")
+            return False
+            
+    except Exception as e:
+        st.error(f"Configuration Error: {e}")
         return False
 
     now_ist = get_ist_time()
@@ -225,6 +218,9 @@ def upload_to_sap(doc_list):
     # 1. Fetch CSRF Token (Security Requirement)
     try:
         # Base service URL for Token Fetch (remove EntitySet)
+        if not SAP_SERVICE_URL:
+             return False, "SAP_SERVICE_URL not found in environment variables."
+
         service_root = SAP_SERVICE_URL.replace("/SaudaHeaderSet", "/")
         params = {"sap-client": SAP_CLIENT}
          
@@ -248,8 +244,6 @@ def upload_to_sap(doc_list):
     for i, doc in enumerate(doc_list):
         try:
             payload = transform_to_sap_payload(doc)
-            # Debug: Print payload if needed
-            # print(json.dumps(payload, indent=2))
              
             r_post = session.post(SAP_SERVICE_URL, json=payload, headers=headers, params=params, verify=False)
              
