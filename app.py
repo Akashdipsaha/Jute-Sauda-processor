@@ -33,16 +33,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- CONFIGURATION FROM GITHUB SECRETS / ENVIRONMENT VARIABLES ---
 # These match the names in your GitHub Secrets screenshot exactly
 MY_API_KEY = "AIzaSyBi26lZySMpOgwO4-9RuQ5GdkZFCy9vGRo" 
-MONGO_USER = os.environ.get("MONGO_USER")
-MONGO_PASSWORD = os.environ.get("MONGO_PASS") # Screenshot says MONGO_PASS
-MONGO_CLUSTER_URL = os.environ.get("MONGO_URL") # Screenshot says MONGO_URL
+MONGO_USER = "Akashdip_Saha"
+MONGO_PASSWORD = "STIL@12345"
+MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
 
-# --- SAP CONFIGURATION ---
-SAP_HOST = os.environ.get("SAP_HOST")
-SAP_SERVICE_URL = os.environ.get("SAP_SERVICE_URL")
-SAP_CLIENT = os.environ.get("SAP_CLIENT")
-SAP_USERNAME = os.environ.get("SAP_USERNAME")
-SAP_PASSWORD = os.environ.get("SAP_PASSWORD")
+# --- SAP CONFIGURATION (VERIFIED) ---
+SAP_HOST = "https://192.168.102.18:44300"
+# This combines Host + Service Path + EntitySet
+SAP_SERVICE_URL = f"{SAP_HOST}/sap/opu/odata/sap/ZSAUDA_OCR_PR_SRV/SaudaHeaderSet"
+# Details from your screenshot (Bottom Right Corner: DS4 (1) 100)
+SAP_CLIENT = "100" 
+SAP_USERNAME = "SGET09"      # User provided
+SAP_PASSWORD = "ElBicho@12"
 
 # --- Database Connection Helper ---
 @st.cache_resource(ttl=600)
@@ -4764,6 +4766,7 @@ if True:
                                 
                         except Exception as e:
                             st.error(f"Error during save process: {e}")
+
 
 
 
