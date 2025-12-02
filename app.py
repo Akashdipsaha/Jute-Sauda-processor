@@ -32,7 +32,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION FROM GITHUB SECRETS / ENVIRONMENT VARIABLES ---
 # These match the names in your GitHub Secrets screenshot exactly
-MY_API_KEY = "AIzaSyBi26lZySMpOgwO4-9RuQ5GdkZFCy9vGRo" 
+MY_API_KEY = os.environ.get("MY_API_KEY")
 MONGO_USER = os.environ.get("MONGO_USER")
 MONGO_PASSWORD = os.environ.get("MONGO_PASS") # Screenshot says MONGO_PASS
 MONGO_CLUSTER_URL = os.environ.get("MONGO_URL") # Screenshot says MONGO_URL
@@ -4764,4 +4764,5 @@ if True:
                                 
                         except Exception as e:
                             st.error(f"Error during save process: {e}")
+
 
