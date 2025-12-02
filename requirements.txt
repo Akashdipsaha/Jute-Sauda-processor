@@ -10,5 +10,11 @@ pytz
 fastapi
 uvicorn
 dnspython
+requests
+passlib
+bcrypt
+
+
+
 
 
