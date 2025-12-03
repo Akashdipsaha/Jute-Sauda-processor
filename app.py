@@ -31,7 +31,7 @@ import fitz  # PyMuPDF for PDF handling
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION ---
-MY_API_KEY = "AIzaSyCmXMw8JYXBW7CWKZ_fHztK2628MthPzz0" 
+MY_API_KEY = "AIzaSyBjGigshFuCAudaOGmvHgYJeNB5kV792gI" 
 MONGO_USER = "Akashdip_Saha"
 MONGO_PASSWORD = "STIL@12345"
 MONGO_CLUSTER_URL = "cluster0.2zgbica.mongodb.net/"
@@ -4770,5 +4770,6 @@ if True:
                                 
                         except Exception as e:
                             st.error(f"Error during save process: {e}")
+
 
 
